@@ -1,0 +1,261 @@
+{
+ "overallPeakDbFS": -10.5,
+ "flaps40": {
+  "peakDb": {
+   "min": -13.9,
+   "max": -10.6,
+   "mean": -11.8,
+   "sd": 0.7
+  },
+  "rmsDb": {
+   "min": -30.4,
+   "max": -26.3,
+   "mean": -28.1,
+   "sd": 0.8
+  },
+  "ms_to_minus60dBFS": {
+   "min": 179,
+   "max": 207,
+   "mean": 192.4,
+   "sd": 7.4
+  },
+  "ms_to_minus40dB_rel_peak": {
+   "min": 160,
+   "max": 192,
+   "mean": 175.1,
+   "sd": 8
+  },
+  "centroidHz": {
+   "min": 2793.2,
+   "max": 4144.1,
+   "mean": 3387.7,
+   "sd": 306
+  },
+  "frac_800_8k": {
+   "min": 87.4,
+   "max": 95.1,
+   "mean": 92.3,
+   "sd": 1.3
+  },
+  "frac_below_300": {
+   "min": 0.9,
+   "max": 3,
+   "mean": 1.4,
+   "sd": 0.4
+  },
+  "frac_above_8k": {
+   "min": 3,
+   "max": 6.8,
+   "mean": 4.6,
+   "sd": 1
+  },
+  "voiceMs": {
+   "min": 107.8,
+   "max": 143.6,
+   "mean": 126.1,
+   "sd": 10.4
+  },
+  "semitones": {
+   "min": -3.9,
+   "max": 3.9,
+   "mean": -0.4,
+   "sd": 2.2
+  },
+  "centroidSpreadSemitones": 6.8,
+  "minConsecutiveSemitoneStep": 0.9199999999999999,
+  "minConsecutiveCentroidStepHz": 20.3,
+  "consecutiveIdenticalGrainTimings": 0
+ },
+ "sizeIntensitySweep": [
+  {
+   "size": 0.5,
+   "intensity": 0.4,
+   "x": -8.8,
+   "voiceMs": 80,
+   "peakDb": -23.1,
+   "rmsDb": -40.5,
+   "centroidHz": 3978
+  },
+  {
+   "size": 1,
+   "intensity": 1,
+   "x": -7.2,
+   "voiceMs": 115,
+   "peakDb": -13.8,
+   "rmsDb": -32.9,
+   "centroidHz": 3130
+  },
+  {
+   "size": 1.5,
+   "intensity": 1.6,
+   "x": -5.6,
+   "voiceMs": 178,
+   "peakDb": -10.9,
+   "rmsDb": -28.2,
+   "centroidHz": 3203
+  },
+  {
+   "size": 2,
+   "intensity": 0.4,
+   "x": -4,
+   "voiceMs": 168,
+   "peakDb": -22.2,
+   "rmsDb": -39.8,
+   "centroidHz": 2565
+  },
+  {
+   "size": 0.5,
+   "intensity": 1,
+   "x": -2.4,
+   "voiceMs": 80,
+   "peakDb": -14.2,
+   "rmsDb": -32.4,
+   "centroidHz": 3630
+  },
+  {
+   "size": 1,
+   "intensity": 1.6,
+   "x": -0.8,
+   "voiceMs": 138,
+   "peakDb": -10.5,
+   "rmsDb": -26.6,
+   "centroidHz": 3619
+  },
+  {
+   "size": 1.5,
+   "intensity": 0.4,
+   "x": 0.8,
+   "voiceMs": 168,
+   "peakDb": -22.2,
+   "rmsDb": -37.1,
+   "centroidHz": 2772
+  },
+  {
+   "size": 2,
+   "intensity": 1,
+   "x": 2.4,
+   "voiceMs": 198,
+   "peakDb": -12.7,
+   "rmsDb": -29.8,
+   "centroidHz": 2982
+  },
+  {
+   "size": 0.5,
+   "intensity": 1.6,
+   "x": 4,
+   "voiceMs": 85,
+   "peakDb": -10.9,
+   "rmsDb": -30,
+   "centroidHz": 4701
+  },
+  {
+   "size": 1,
+   "intensity": 0.4,
+   "x": 5.6,
+   "voiceMs": 131,
+   "peakDb": -25.1,
+   "rmsDb": -42.3,
+   "centroidHz": 2814
+  },
+  {
+   "size": 1.5,
+   "intensity": 1,
+   "x": 7.2,
+   "voiceMs": 140,
+   "peakDb": -12.2,
+   "rmsDb": -31.4,
+   "centroidHz": 3047
+  },
+  {
+   "size": 2,
+   "intensity": 1.6,
+   "x": 8.8,
+   "voiceMs": 185,
+   "peakDb": -12.9,
+   "rmsDb": -29.8,
+   "centroidHz": 2627
+  }
+ ],
+ "burst30in150ms": {
+  "accepted": 30,
+  "peakDb": -10.7,
+  "rmsDb": -27.4,
+  "ms_to_minus60dBFS": 314,
+  "centroidHz": 3224,
+  "frac_800_8k": 93.1
+ },
+ "steps": {
+  "peakDb": {
+   "min": -30.9,
+   "max": -26.7,
+   "mean": -28,
+   "sd": 1.2
+  },
+  "rmsDb": {
+   "min": -47.3,
+   "max": -42.9,
+   "mean": -44.4,
+   "sd": 1.4
+  },
+  "ms_to_minus60dBFS": {
+   "min": 82,
+   "max": 99,
+   "mean": 91.4,
+   "sd": 5.1
+  },
+  "ms_to_minus40dB_rel_peak": {
+   "min": 110,
+   "max": 118,
+   "mean": 113.8,
+   "sd": 2.3
+  },
+  "centroidHz": {
+   "min": 1206.2,
+   "max": 1885.4,
+   "mean": 1542,
+   "sd": 219.1
+  },
+  "frac_800_8k": {
+   "min": 59,
+   "max": 84.3,
+   "mean": 74.6,
+   "sd": 7.7
+  },
+  "frac_below_300": {
+   "min": 9.1,
+   "max": 19.4,
+   "mean": 13.3,
+   "sd": 2.9
+  },
+  "frac_above_8k": {
+   "min": 0.3,
+   "max": 1.2,
+   "mean": 0.8,
+   "sd": 0.3
+  }
+ },
+ "stepVsFlapRmsDb": -16.3,
+ "offlineVoices": {
+  "maxVoices": 12,
+  "active": 1
+ },
+ "live": {
+  "madeBeforeResume": 0,
+  "madeAfterResume": 1,
+  "ms60": 2.800000011920929,
+  "maxVoices": 12,
+  "active": 12
+ },
+ "pageErrors": [],
+ "checks": {
+  "peak <= -1 dBFS (no clipping)": true,
+  "max voices <= 12 (offline and live)": true,
+  "semitones within +-4": true,
+  "no two consecutive flaps identical": true,
+  "voice length 80-220 ms": true,
+  "energy mostly 800 Hz-8 kHz": true,
+  "steps at least 10 dB below flaps": true,
+  "no AudioContext before resume()": true,
+  "no page errors": true
+ }
+}
