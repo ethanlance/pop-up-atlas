@@ -443,3 +443,11 @@
 - Still edge-on: house / village / house_with_path side walls at rot 0, house_with_path front at rot 1 and 3 and roof
   at rot 2, bridge arches at rot 1 (none of these are free). Dense forest: neighbouring trees still pass through each
   other for a few frames while they rise (their flat footprints overlap sideways).
+
+## 2026-11-18 lead — critic round 4 result, wrap-up
+- Blind critic round 4: candidate 5.2 vs reference 7.3; reference identified 4/4 (75–90 % confidence); motion 4/10.
+- Stop condition not reached; work paused here because the account spend limit was hit once during round 4.
+- Final perf, quiet machine, 1440x900, M3 Pro: p95 3.1 / 3.1 / 3.6 ms, 25 draw calls, 74k triangles. Not measured on an actual mid-range laptop.
+- Open issues for a round 5: shadow quality (ragged/noisy, tint), white stand under the traveller, blur width, house walls
+  folding with blank backs up, possible hill re-trigger/squash seen in the round-4 strip (frames 9–11), brief white slab
+  under bushes at the trailing edge, bridge arches edge-on at rot 1, no audio in the capture, sound never judged by ear.
