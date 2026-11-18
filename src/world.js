@@ -11,21 +11,24 @@
 import * as THREE from 'three';
 import * as Fold from './fold.js';
 
-const HALF_X = 9; // window half size in cells: 19 x 15 cells = 38 x 30 units (view is about 26 x 18)
-const HALF_Z = 7;
+const HALF_X = 6; // window half size in cells: 13 x 11 cells = 26 x 22 units (the camera sees about 9.5 x 6)
+const HALF_Z = 5;
 const WIN_W = HALF_X * 2 + 1;
 const WIN_H = HALF_Z * 2 + 1;
 
-const RISE_AHEAD = 5.5; // cells, along the heading
-const RISE_SIDE = 3; // cells, sideways and behind
-const HYSTERESIS = 1; // fold-down radii are this much larger
+const RISE_AHEAD = 2.1; // cells, along the heading when walking across the page: the rise front is inside the frame
+const RISE_AHEAD_UP = 1.7; // walking up the page (-Z): nearer, so the rise is close to the sharp band
+const RISE_AHEAD_DOWN = 1.4; // walking down the page (+Z): the frame ends about 1.8 cells ahead of the traveller
+const RISE_SIDE = 1.5; // cells, sideways
+const RISE_BEHIND = 1.0; // cells, behind (only matters at the start and in turns)
+const HYSTERESIS = 0.75; // fold-down radii are this much larger (1.75 cells behind)
 const HEADING_TAU = 0.45; // s, low-pass on the heading so the region swings instead of jumping
-const REACH_TIME = 1.3; // s for the region to grow from the traveller to full size (start / teleport ripple)
+const REACH_TIME = 0.8; // s for the region to grow from the traveller to full size (start / teleport ripple)
 const TELEPORT_DIST = 3; // units in one frame
 
-const RIPPLE_PER_CELL = 0.05; // s of extra rise delay per cell of distance from the traveller
-const TILE_JITTER = 0.1; // s, per-tile random delay so a row does not pop in unison
-const INTRA_RISE = 0.42; // s spanned by the `delay` extra inside one tile
+const RIPPLE_PER_CELL = 0.075; // s of extra rise delay per cell of distance from the traveller
+const TILE_JITTER = 0.03; // s, per-tile random delay so a row does not pop in unison
+const INTRA_RISE = 0.6; // s spanned by the `delay` extra inside one tile
 const INTRA_FALL = 0.16;
 const NEST_LAG = 0.07; // s a nested flap starts after its parent
 const RISE_RATE = 160; // flap starts per second (token bucket): keeps audio under 28 starts per 100 ms
@@ -36,9 +39,12 @@ const NUDGE_SPEED = 0.28; // fold fractions / s given to resting neighbours (abo
 const BASE_TOP = 0.004;
 const LAYER_STEP = 0.004; // vertical spacing between stacked flat flaps (no z-fighting)
 const WALK_MARGIN = 0.12;
-const GUTTER_EVERY = 8; // cells
+const GUTTER_EVERY = 6; // cells between book gutters (valley creases along z, on a cell edge)
+const CAM_DIR = [0, -Math.sin(55 * Math.PI / 180), -Math.cos(55 * Math.PI / 180)]; // fixed camera view direction
 const PAGE_SIZE = 480;
 const MAX_SUBSTEPS = 16;
+
+const MAX_FOLDS = 3; // nested fold levels the shader animates
 
 const PEND_NONE = 0;
 const PEND_RISE = 1;
@@ -78,7 +84,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         delay: THREE.MathUtils.clamp(Number(ud.delay ?? 0.5) || 0, 0, 1),
         mass: Number(ud.mass ?? 1) || 1,
         moves: false, lift: 0, layer: 0, size: 1, px: 0, pz: 0,
-        vOff: 0, vCount: 0, pos: null, nrm: null, hasMesh: false, hinge: null, foldA: -1, foldB: -1,
+        vOff: 0, vCount: 0, pos: null, nrm: null, hasMesh: false, hinge: null, folds: null,
       };
       const g = child.isMesh ? child.geometry : null;
       if (g && g.attributes.position && g.attributes.normal && g.attributes.uv && g.index) {
@@ -110,7 +116,8 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       // Vertex layout of the tile and its static attributes.
       let vCount = 0, iCount = 0;
       for (const p of pieces) if (p.geometry) { p.vOff = vCount; p.vCount = p.geometry.attributes.position.count; vCount += p.vCount; iCount += p.geometry.index.count; }
-      const proto = { pieces, vCount, indices: new Uint32Array(iCount), uv4: new Float32Array(vCount * 4), up: new Float32Array(vCount * 6) };
+      const proto = { pieces, vCount, indices: new Uint32Array(iCount), uv4: new Float32Array(vCount * 4), up: new Float32Array(vCount * 6),
+        col: new Float32Array(vCount * 4).fill(1) };
       let io = 0;
       const rects = [];
       pieces.forEach((p, i) => {
@@ -124,7 +131,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         p.pz = up.elements[14];
         const g = p.geometry;
         if (!g) return;
-        const pos = g.attributes.position, nrm = g.attributes.normal, uv = g.attributes.uv, uv1 = g.attributes.uv1 ?? uv;
+        const pos = g.attributes.position, nrm = g.attributes.normal, uv = g.attributes.uv, uv1 = g.attributes.uv1 ?? uv, col = g.attributes.color;
         p.pos = new Float32Array(p.vCount * 3);
         p.nrm = new Float32Array(p.vCount * 3);
         p.hasMesh = true;
@@ -133,6 +140,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
           p.nrm[k * 3] = nrm.getX(k); p.nrm[k * 3 + 1] = nrm.getY(k); p.nrm[k * 3 + 2] = nrm.getZ(k);
           const o = (p.vOff + k) * 4;
           proto.uv4[o] = uv.getX(k); proto.uv4[o + 1] = uv.getY(k); proto.uv4[o + 2] = uv1.getX(k); proto.uv4[o + 3] = uv1.getY(k);
+          if (col) { proto.col[o] = col.getX(k); proto.col[o + 1] = col.getY(k); proto.col[o + 2] = col.getZ(k); if (col.itemSize > 3) proto.col[o + 3] = col.getW(k); }
         }
         for (let k = 0; k < g.index.count; k++) proto.indices[io++] = g.index.getX(k) + p.vOff;
 
@@ -163,22 +171,44 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
           v.fromArray(p.nrm, k * 3).applyMatrix3(n3).toArray(proto.up, o + 3);
         }
 
-        // The folds that move this piece, innermost first: its own hinge, then its folding ancestors (two levels).
+        // The folds that move this piece, innermost first: its own hinge, then its folding ancestors (three levels).
         // Each is a line in the popped pose: origin + axis, the axis scaled by the fold angle.
-        p.hinge = new Float32Array(12);
-        p.foldA = -1;
-        p.foldB = -1;
+        p.hinge = new Float32Array(MAX_FOLDS * 6);
+        p.folds = [-1, -1, -1];
         let level = 0;
         for (let q = i; q >= 0; q = pieces[q].parent) {
           if (pieces[q].fa === 0) continue;
-          if (level === 2) { console.warn('world: more than two nested folds, outer ones ignored for', p.name); break; }
+          if (level === MAX_FOLDS) { console.warn(`world: more than ${MAX_FOLDS} nested folds, outer ones ignored for`, p.name); break; }
           const e = chain[q].up.elements;
           v.set(e[0], e[1], e[2]).normalize().multiplyScalar(pieces[q].fa);
           p.hinge.set([e[12], e[13], e[14], v.x, v.y, v.z], level * 6);
-          if (level === 0) p.foldA = q; else p.foldB = q;
+          p.folds[level] = q;
           level++;
         }
       });
+      // Card area projected towards the camera for each quarter-turn, per tile and per moving piece.
+      proto.facing = [0, 0, 0, 0];
+      for (const p of pieces) {
+        if (!p.hasMesh || !p.moves) continue;
+        p.facing = [0, 0, 0, 0];
+        let total = 0;
+        const idx = p.geometry.index;
+        for (let k = 0; k < idx.count; k += 3) {
+          const a = (p.vOff + idx.getX(k)) * 6, b = (p.vOff + idx.getX(k + 1)) * 6, c = (p.vOff + idx.getX(k + 2)) * 6;
+          const u = proto.up;
+          const e1x = u[b] - u[a], e1y = u[b + 1] - u[a + 1], e1z = u[b + 2] - u[a + 2];
+          const e2x = u[c] - u[a], e2y = u[c + 1] - u[a + 1], e2z = u[c + 2] - u[a + 2];
+          let nx = e1y * e2z - e1z * e2y, nz = e1x * e2y - e1y * e2x;
+          const ny = e1z * e2x - e1x * e2z;
+          total += Math.hypot(nx, ny, nz) / 2;
+          for (let r = 0; r < 4; r++) {
+            p.facing[r] += Math.abs(nx * CAM_DIR[0] + ny * CAM_DIR[1] + nz * CAM_DIR[2]) / 2;
+            const t = -nz; nz = nx; nx = t; // next quarter-turn: (x, z) -> (-z, x)
+          }
+        }
+        p.area = total;
+        for (let r = 0; r < 4; r++) proto.facing[r] += p.facing[r];
+      }
       protos.set(root.name.slice(5), proto);
       if (vCount > VCAP) VCAP = vCount;
       if (iCount > ICAP) ICAP = iCount;
@@ -198,17 +228,21 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       });
       obs.push(a);
     }
-    // Canonical rotation: the smallest rotation with the same sockets. Symmetric tiles (all grass, straights) then
-    // keep their flaps facing the fixed camera instead of standing edge-on for no socket reason.
+    // Drawn rotation: among the rotations with the same sockets, the one that turns most card area towards the
+    // camera (ties go to the smallest). Symmetric tiles then never stand edge-on for no socket reason.
     const sk = t.sockets ? [t.sockets.n, t.sockets.e, t.sockets.s, t.sockets.w] : null;
     const canon = [0, 1, 2, 3];
+    const facing = protos.get(t.id)?.facing ?? [0, 0, 0, 0];
     if (sk) {
-      for (let k = 1; k < 4; k++) {
-        for (let c = 0; c < k; c++) {
+      for (let k = 0; k < 4; k++) {
+        let best = k;
+        for (let c = 0; c < 4; c++) {
           let same = true;
           for (let d = 0; d < 4; d++) if (sk[(d - k + 4) % 4] !== sk[(d - c + 4) % 4]) same = false;
-          if (same) { canon[k] = c; break; }
+          if (!same) continue;
+          if (facing[c] > facing[best] * 1.02 || (c < best && facing[c] >= facing[best] * 0.98)) best = c;
         }
+        canon[k] = best;
       }
     }
     defs.set(t.id, { blocked: !!t.blocked, obs, canon });
@@ -223,9 +257,10 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   let pageColor = new THREE.Color(0xe9dcc3);
   let fibreScale = 0.5;
 
-  // Vertex layout (floats): position 3, normal 3, uv 2, uv1 2, hingeA 3, axisA 3, hingeB 3, axisB 3,
-  // fold 4 = (window slot, flap index of fold A or -1, flap index of fold B or -1, flat-pose lift).
-  const VS = 26;
+  // Vertex layout (floats): position 3, normal 3, uv 2, uv1 2, color 4, then per fold level A/B/C (innermost first)
+  // hinge origin 3 + axis 3 (axis length = fold angle), with the flat-pose lift in hingeA.w,
+  // and fold 4 = (window slot, flap index of fold A, B, C or -1).
+  const VS = 37;
   const vbData = new Float32Array(ready ? NSLOT * VCAP * VS : VS);
   const ibData = new Uint32Array(ready ? NSLOT * ICAP : 3);
   const vb = new THREE.InterleavedBuffer(vbData, VS).setUsage(THREE.DynamicDrawUsage);
@@ -235,11 +270,14 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   tilesGeo.setAttribute('normal', new THREE.InterleavedBufferAttribute(vb, 3, 3));
   tilesGeo.setAttribute('uv', new THREE.InterleavedBufferAttribute(vb, 2, 6));
   tilesGeo.setAttribute('uv1', new THREE.InterleavedBufferAttribute(vb, 2, 8));
-  tilesGeo.setAttribute('hingeA', new THREE.InterleavedBufferAttribute(vb, 3, 10));
-  tilesGeo.setAttribute('axisA', new THREE.InterleavedBufferAttribute(vb, 3, 13));
-  tilesGeo.setAttribute('hingeB', new THREE.InterleavedBufferAttribute(vb, 3, 16));
-  tilesGeo.setAttribute('axisB', new THREE.InterleavedBufferAttribute(vb, 3, 19));
-  tilesGeo.setAttribute('fold', new THREE.InterleavedBufferAttribute(vb, 4, 22));
+  tilesGeo.setAttribute('color', new THREE.InterleavedBufferAttribute(vb, 4, 10));
+  tilesGeo.setAttribute('hingeA', new THREE.InterleavedBufferAttribute(vb, 4, 14));
+  tilesGeo.setAttribute('axisA', new THREE.InterleavedBufferAttribute(vb, 3, 18));
+  tilesGeo.setAttribute('hingeB', new THREE.InterleavedBufferAttribute(vb, 3, 21));
+  tilesGeo.setAttribute('axisB', new THREE.InterleavedBufferAttribute(vb, 3, 24));
+  tilesGeo.setAttribute('hingeC', new THREE.InterleavedBufferAttribute(vb, 3, 27));
+  tilesGeo.setAttribute('axisC', new THREE.InterleavedBufferAttribute(vb, 3, 30));
+  tilesGeo.setAttribute('fold', new THREE.InterleavedBufferAttribute(vb, 4, 33));
   tilesGeo.setIndex(ib);
   tilesGeo.setDrawRange(0, 0);
 
@@ -251,11 +289,14 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   const uTile = { value: tileState };
   const uLive = { value: liveX };
   const POP_PARS = /* glsl */`
-    attribute vec3 hingeA;
+    attribute vec4 hingeA;
     attribute vec3 axisA;
     attribute vec3 hingeB;
     attribute vec3 axisB;
+    attribute vec3 hingeC;
+    attribute vec3 axisC;
     attribute vec4 fold;
+    varying vec3 popW;
     uniform vec4 popTile[${tileState.length / 4}];
     uniform vec4 popLive[${liveX.length / 4}];
     float popX(float flap) {
@@ -276,11 +317,25 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       n = n * c + cross(d, n) * s + d * (dot(d, n) * (1.0 - c));
     }
     void popApply(inout vec3 p, inout vec3 n) {
-      float xa = popX(fold.y), xb = popX(fold.z);
-      popRot(p, n, hingeA, axisA, xa);
+      float xa = popX(fold.y), xb = popX(fold.z), xc = popX(fold.w);
+      popRot(p, n, hingeA.xyz, axisA, xa);
       popRot(p, n, hingeB, axisB, xb);
-      float f = clamp(max(xa, xb), 0.0, 1.0);
-      p.y += fold.w * f * f;
+      popRot(p, n, hingeC, axisC, xc);
+      float f = clamp(max(xa, max(xb, xc)), 0.0, 1.0);
+      p.y += hingeA.w * f * f;
+    }
+  `;
+  const GUTTER_PARS = /* glsl */`
+    varying vec3 popW;
+    // x = signed distance to the nearest gutter line, y = 1 on the page surface fading to 0 above it.
+    vec2 popGutter() {
+      float period = ${(GUTTER_EVERY * CELL).toFixed(1)};
+      float gx = mod( popW.x + ${(CELL / 2).toFixed(1)} + period * 0.5, period ) - period * 0.5;
+      return vec2( gx, 1.0 - smoothstep( 0.03, 0.10, popW.y ) );
+    }
+    float popValley( float gx ) {
+      float w = 1.0 - smoothstep( 0.0, 0.4, abs( gx ) );
+      return w * w;
     }
   `;
   function patchMaterial(material) {
@@ -290,7 +345,12 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\n' + POP_PARS)
         .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n{ vec3 popP = position; popApply(popP, objectNormal); }')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\n{ vec3 popN = vec3(0.0, 1.0, 0.0); popApply(transformed, popN); }');
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n{ vec3 popN = vec3(0.0, 1.0, 0.0); popApply(transformed, popN); }\npopW = transformed;');
+      // Book gutter: a lit valley crease in the page every GUTTER_EVERY cells (normal tilt + a thin dark fold line).
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\n' + GUTTER_PARS)
+        .replace('#include <map_fragment>', '#include <map_fragment>\n{ vec2 pg = popGutter(); diffuseColor.rgb *= 1.0 - pg.y * ( 0.26 * exp( - pg.x * pg.x / 0.0012 ) + 0.05 * popValley( pg.x ) ); }')
+        .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n{ vec2 pg = popGutter(); vec3 gx = normalize( ( viewMatrix * vec4( 1.0, 0.0, 0.0, 0.0 ) ).xyz ); normal = normalize( normal - gx * sign( pg.x ) * 0.38 * pg.y * popValley( pg.x ) ); }');
     };
     material.customProgramCacheKey = () => `popup-${STRIDE}-${ACTIVE_MAX}`;
     return material;
@@ -377,44 +437,6 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   page.frustumCulled = false;
   group.add(page);
 
-  // Book gutters: a soft dark crease every GUTTER_EVERY cells, on the cell boundary, as one transparent strip mesh.
-  const gutterPeriod = GUTTER_EVERY * CELL;
-  let gutter = null;
-  if (typeof document !== 'undefined') {
-    const cv = document.createElement('canvas');
-    cv.width = 64; cv.height = 4;
-    const ctx = cv.getContext('2d');
-    const gr = ctx.createLinearGradient(0, 0, 64, 0);
-    gr.addColorStop(0, 'rgba(60,40,24,0)');
-    gr.addColorStop(0.36, 'rgba(60,40,24,0.10)');
-    gr.addColorStop(0.49, 'rgba(48,30,18,0.42)');
-    gr.addColorStop(0.51, 'rgba(48,30,18,0.42)');
-    gr.addColorStop(0.64, 'rgba(255,246,225,0.12)');
-    gr.addColorStop(1, 'rgba(255,246,225,0)');
-    ctx.fillStyle = gr;
-    ctx.fillRect(0, 0, 64, 4);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    const pos = [], uv = [], index = [];
-    const halfW = 0.34, len = WIN_H * CELL * 0.5 + 6;
-    for (let k = -2; k <= 2; k++) {
-      const x = k * gutterPeriod, o = pos.length / 3;
-      pos.push(x - halfW, 0, -len, x + halfW, 0, -len, x + halfW, 0, len, x - halfW, 0, len);
-      uv.push(0, 0, 1, 0, 1, 1, 0, 1);
-      index.push(o, o + 2, o + 1, o, o + 3, o + 2);
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
-    g.setIndex(index);
-    gutter = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false }));
-    gutter.name = 'gutter';
-    gutter.position.y = BASE_TOP + 0.0015;
-    gutter.frustumCulled = false;
-    gutter.renderOrder = 1;
-    group.add(gutter);
-  }
-
   // ------------------------------------------------------------------------------------------------ runtime state
   const slotCx = new Int32Array(NSLOT).fill(0x7fffffff);
   const slotCz = new Int32Array(NSLOT).fill(0x7fffffff);
@@ -429,11 +451,13 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   const pend = new Uint8Array(NPIECE);
   const timer = new Float32Array(NPIECE);
 
+  const slotIdxStart = new Int32Array(NSLOT).fill(-1); // where the slot's triangles sit in the index buffer
   const slotBlock = new Int16Array(NSLOT).fill(-1); // live block of an active slot
   const freeBlocks = new Int16Array(ACTIVE_MAX);
   let nFree = ACTIVE_MAX;
   for (let k = 0; k < ACTIVE_MAX; k++) freeBlocks[k] = ACTIVE_MAX - 1 - k;
   const flapMsg = { size: 1, intensity: 1, x: 0, z: 0 };
+  const hw = new Float32Array(MAX_FOLDS * 6);
 
   // Pooled upload ranges (three keeps the objects we push; nothing is allocated after start-up).
   const vbRanges = [];
@@ -489,17 +513,19 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     const c = rot === 0 ? 1 : rot === 2 ? -1 : 0;
     const s = rot === 1 ? -1 : rot === 3 ? 1 : 0;
     const tx = cx * CELL, tz = cz * CELL;
-    const src = proto.up, uv = proto.uv4;
+    const src = proto.up, uv = proto.uv4, col = proto.col;
     let o = slot * VCAP * VS;
     for (let i = 0; i < pieces.length; i++) {
       const p = pieces[i];
       if (!p.hasMesh) continue;
       const h = p.hinge;
-      const ax = c * h[0] + s * h[2] + tx, ay = h[1], az = c * h[2] - s * h[0] + tz;
-      const adx = c * h[3] + s * h[5], ady = h[4], adz = c * h[5] - s * h[3];
-      const bx = c * h[6] + s * h[8] + tx, by = h[7], bz = c * h[8] - s * h[6] + tz;
-      const bdx = c * h[9] + s * h[11], bdy = h[10], bdz = c * h[11] - s * h[9];
+      for (let l = 0; l < MAX_FOLDS; l++) { // hinges of this piece, turned into world space
+        const b = l * 6;
+        hw[b] = c * h[b] + s * h[b + 2] + tx; hw[b + 1] = h[b + 1]; hw[b + 2] = c * h[b + 2] - s * h[b] + tz;
+        hw[b + 3] = c * h[b + 3] + s * h[b + 5]; hw[b + 4] = h[b + 4]; hw[b + 5] = c * h[b + 5] - s * h[b + 3];
+      }
       const lift = p.moves ? p.lift : 0;
+      const f0 = p.folds[0], f1 = p.folds[1], f2 = p.folds[2];
       for (let k = p.vOff, e = p.vOff + p.vCount; k < e; k++) {
         const a = k * 6, u = k * 4;
         const x = src[a], z = src[a + 2], nx = src[a + 3], nz = src[a + 5];
@@ -510,11 +536,14 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         vbData[o + 4] = src[a + 4];
         vbData[o + 5] = c * nz - s * nx;
         vbData[o + 6] = uv[u]; vbData[o + 7] = uv[u + 1]; vbData[o + 8] = uv[u + 2]; vbData[o + 9] = uv[u + 3];
-        vbData[o + 10] = ax; vbData[o + 11] = ay; vbData[o + 12] = az;
-        vbData[o + 13] = adx; vbData[o + 14] = ady; vbData[o + 15] = adz;
-        vbData[o + 16] = bx; vbData[o + 17] = by; vbData[o + 18] = bz;
-        vbData[o + 19] = bdx; vbData[o + 20] = bdy; vbData[o + 21] = bdz;
-        vbData[o + 22] = slot; vbData[o + 23] = p.foldA; vbData[o + 24] = p.foldB; vbData[o + 25] = lift;
+        vbData[o + 10] = col[u]; vbData[o + 11] = col[u + 1]; vbData[o + 12] = col[u + 2]; vbData[o + 13] = col[u + 3];
+        vbData[o + 14] = hw[0]; vbData[o + 15] = hw[1]; vbData[o + 16] = hw[2]; vbData[o + 17] = lift;
+        vbData[o + 18] = hw[3]; vbData[o + 19] = hw[4]; vbData[o + 20] = hw[5];
+        vbData[o + 21] = hw[6]; vbData[o + 22] = hw[7]; vbData[o + 23] = hw[8];
+        vbData[o + 24] = hw[9]; vbData[o + 25] = hw[10]; vbData[o + 26] = hw[11];
+        vbData[o + 27] = hw[12]; vbData[o + 28] = hw[13]; vbData[o + 29] = hw[14];
+        vbData[o + 30] = hw[15]; vbData[o + 31] = hw[16]; vbData[o + 32] = hw[17];
+        vbData[o + 33] = slot; vbData[o + 34] = f0; vbData[o + 35] = f1; vbData[o + 36] = f2;
         o += VS;
       }
     }
@@ -526,6 +555,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     let n = 0;
     for (let slot = 0; slot < NSLOT; slot++) {
       const proto = slotProto[slot];
+      slotIdxStart[slot] = n;
       if (!proto) continue;
       const src = proto.indices, base = slot * VCAP;
       for (let k = 0; k < src.length; k++) ibData[n++] = src[k] + base;
@@ -636,7 +666,8 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
               if (before === Fold.FLAT) { flapsMoving++; firstRise = true; }
               emitFlap(slot, p, 1);
               if (trace && trace.id < 0 && before === Fold.FLAT && p.mass >= trace.minMass && p.mass <= trace.maxMass) {
-                trace.id = id; trace.t0 = simTime; trace.mass = p.mass; trace.name = p.name; trace.fa = p.fa;
+                trace.id = id; trace.mass = p.mass; trace.name = p.name; trace.fa = p.fa;
+                trace.t0 = simTime - elapsed; // this frame's substeps are part of the rise
                 trace.samples.push({ t: 0, x: pool.x[id] });
               }
             }
@@ -719,18 +750,15 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       vb.needsUpdate = true;
       page.position.x = fcx * CELL;
       page.position.z = fcz * CELL;
-      if (gutter) {
-        gutter.position.x = Math.round((fx + CELL / 2) / gutterPeriod) * gutterPeriod - CELL / 2;
-        gutter.position.z = fcz * CELL;
-      }
     }
 
     // Rise / fold decisions: an egg-shaped region, longer ahead, with hysteresis.
     const hlen = Math.hypot(hx, hz);
     const ux = hlen > 1e-4 ? hx / hlen : 0, uz = hlen > 1e-4 ? hz / hlen : -1;
-    const ahead = RISE_SIDE + (RISE_AHEAD - RISE_SIDE) * Math.min(1, hlen);
-    const riseA = ahead * reach, riseS = RISE_SIDE * reach;
-    const foldA = riseA + HYSTERESIS, foldS = riseS + HYSTERESIS, foldB = riseS + HYSTERESIS;
+    const aheadFull = uz < 0 ? RISE_AHEAD + (RISE_AHEAD_UP - RISE_AHEAD) * -uz : RISE_AHEAD + (RISE_AHEAD_DOWN - RISE_AHEAD) * uz;
+    const ahead = RISE_BEHIND + (aheadFull - RISE_BEHIND) * Math.min(1, hlen);
+    const riseA = ahead * reach, riseS = RISE_SIDE * reach, riseB = RISE_BEHIND * reach;
+    const foldA = riseA + HYSTERESIS, foldS = riseS + HYSTERESIS, foldB = riseB + HYSTERESIS;
     for (let slot = 0; slot < NSLOT; slot++) {
       const dx = slotCx[slot] - fx / CELL, dz = slotCz[slot] - fz / CELL;
       const a = dx * ux + dz * uz, s = dz * ux - dx * uz;
@@ -738,7 +766,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         const ra = a > 0 ? foldA : foldB;
         if ((a * a) / (ra * ra) + (s * s) / (foldS * foldS) > 1) trigger(slot, false, 0);
       } else {
-        const ra = a > 0 ? riseA : riseS;
+        const ra = a > 0 ? riseA : riseB;
         if ((a * a) / (ra * ra) + (s * s) / (riseS * riseS) <= 1) trigger(slot, true, Math.sqrt(dx * dx + dz * dz));
       }
     }
@@ -842,7 +870,74 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     const inWin = slotCx[slot] === cx && slotCz[slot] === cz;
     return { id: t.id, rot: t.rot, drawnRot: tileRot(t), inWindow: inWin, up: inWin ? !!slotUp[slot] : false,
       x: inWin && slotProto[slot] ? Array.from(pool.x.subarray(slot * STRIDE, slot * STRIDE + slotProto[slot].pieces.length)) : [],
-      pieces: inWin && slotProto[slot] ? slotProto[slot].pieces.map((p) => ({ name: p.name, fa: p.fa, layer: p.layer, lift: p.lift, parent: p.parent })) : [] };
+      pieces: inWin && slotProto[slot] ? slotProto[slot].pieces.map((p) => ({ name: p.name, fa: p.fa, mass: p.mass, size: p.size, layer: p.layer, lift: p.lift, parent: p.parent })) : [] };
+  }
+  /**
+   * Is cell (cx, cz) really in the draw data right now? Checks the slot, its base vertices (inside the cell), its
+   * triangles in the index buffer and that no upload is still queued. Call after the frame has rendered.
+   */
+  function debugCell(cx, cz) {
+    const t = wfc.get(cx, cz), slot = mod(cx, WIN_W) + mod(cz, WIN_H) * WIN_W;
+    const out = { id: t.id, rot: t.rot, drawnRot: tileRot(t), drawn: false, why: '' };
+    const proto = slotProto[slot];
+    if (slotCx[slot] !== cx || slotCz[slot] !== cz) { out.why = 'cell not in window'; return out; }
+    if (!proto) { out.why = 'no prototype for ' + t.id; return out; }
+    if (proto !== protos.get(t.id) || slotRot[slot] !== out.drawnRot) { out.why = 'slot holds another tile or rotation'; return out; }
+    const base = proto.pieces.find((q) => q.isBase && q.hasMesh);
+    if (!base) { out.why = 'tile has no base mesh'; return out; }
+    for (let k = base.vOff; k < base.vOff + base.vCount; k++) {
+      const o = (slot * VCAP + k) * VS;
+      if (Math.abs(vbData[o] - cx * CELL) > CELL / 2 + 0.01 || Math.abs(vbData[o + 2] - cz * CELL) > CELL / 2 + 0.01 || vbData[o + 33] !== slot) {
+        out.why = 'base vertex outside its cell'; return out;
+      }
+    }
+    const i0 = slotIdxStart[slot], n = proto.indices.length;
+    if (i0 < 0 || i0 + n > tilesGeo.drawRange.count) { out.why = 'triangles outside the draw range'; return out; }
+    for (let k = 0; k < n; k += 97) if (ibData[i0 + k] !== proto.indices[k] + slot * VCAP) { out.why = 'index buffer mismatch'; return out; }
+    if (vb.updateRanges.length > 0 || ib.updateRanges.length > 0) { out.why = 'upload still queued'; return out; }
+    if (!tilesMesh.visible || !group.visible) { out.why = 'mesh hidden'; return out; }
+    out.drawn = true;
+    return out;
+  }
+  /** Flaps caught mid-rotation (fold fraction 0.1..0.9, bounding size >= minSize) on screen and in the sharp band. */
+  const dv = new THREE.Vector3();
+  function debugMoving(camera, focus, minSize = 0.45, band = 0.4) {
+    dv.copy(focus).project(camera);
+    const fy = dv.y;
+    let inFrame = 0, inBand = 0, rising = 0, falling = 0;
+    for (let k = 0; k < nActive; k++) {
+      const slot = activeSlots[k], proto = slotProto[slot];
+      if (!proto) continue;
+      for (let i = 0; i < proto.pieces.length; i++) {
+        const p = proto.pieces[i], id = slot * STRIDE + i, m = pool.mode[id], x = pool.x[id];
+        if (p.fa === 0 || !p.hasMesh || p.size < minSize || !(m === Fold.RISING || m === Fold.FALLING) || x < 0.1 || x > 0.9) continue;
+        let px = p.px, pz = p.pz;
+        for (let r = 0; r < slotRot[slot]; r++) { const nx = -pz; pz = px; px = nx; }
+        dv.set(slotCx[slot] * CELL + px, 0.2, slotCz[slot] * CELL + pz).project(camera);
+        if (Math.abs(dv.x) > 0.96 || Math.abs(dv.y) > 0.96) continue;
+        inFrame++;
+        if (m === Fold.RISING) rising++; else falling++;
+        if (Math.abs(dv.y - fy) <= band) inBand++;
+      }
+    }
+    return { inFrame, inBand, rising, falling };
+  }
+  /** Pieces that still stand edge-on to the camera at a rotation the world can draw (projected / total area < 0.2). */
+  function debugSlivers(limit = 0.2, minSize = 0.35) {
+    const out = [];
+    for (const [id, def] of defs) {
+      const proto = protos.get(id);
+      if (!proto) continue;
+      for (const rot of new Set(def.canon)) {
+        const names = proto.pieces.filter((q) => q.facing && q.size >= minSize && q.facing[rot] / q.area < limit)
+          .map((q) => q.name + ' ' + (q.facing[rot] / q.area).toFixed(2));
+        if (names.length) out.push({ id, rot, pieces: names });
+      }
+    }
+    return out;
+  }
+  function debugPrograms(renderer) {
+    return renderer.info.programs.filter((q) => q.cacheKey.includes('popup')).map((q) => (q.cacheKey.split(',')[0] || '?') + ' x' + q.usedTimes);
   }
   /** Plain top-down orthographic render of the scene (no post), returned as a PNG data URL. For alignment checks. */
   function debugTopDown(renderer, { x = 0, z = 0, span = 24 } = {}) {
@@ -861,6 +956,6 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     return url;
   }
 
-  return { update, isWalkable, stats, debugGroup: group, debugTopDown, debugFlapTrace, debugTraceResult, debugState, debugReset,
+  return { update, isWalkable, stats, debugGroup: group, debugCell, debugMoving, debugSlivers, debugPrograms, debugTopDown, debugFlapTrace, debugTraceResult, debugState, debugReset,
     debugSet, debugTile };
 }

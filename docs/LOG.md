@@ -202,3 +202,72 @@
 - Known gaps before critic: page mottling too grey/dirty vs concept cream; pale card colours; edge-on small flaps on
   rotated tiles; near-black card backs; flat printed bridge deck; house walls intersect mid-fold.
 - Blind A/B round 1 built with tools/ab.mjs (random left/right, key in critic/round1/key.json, critic may not read it).
+
+## 2026-11-18 lead — critic round 1 result and routing
+- Blind critic: candidate 3.2 vs reference 7.3, reference identified 4/4, motion 3/10. Full text summarised in critic/SCORES.md.
+- Camera DISTANCE 13 -> 9.5 (~8.4 units across), LOOK_AHEAD 1.3 -> 1.1 (lead).
+- Routed: tiles (clean cream page, saturated palette, bigger layered pieces, no edge-on hinges, bolder traveller, lit backs,
+  raised bridge), look (lighter cool shadows, wider sharp band, capped blur, warm/cool split, stable focus, two-sided light),
+  world (rise region inside the new frame and sharp band, visible hinge rotation, no in-frame spawn/despawn).
+
+## 2026-11-18 00:12 UTC look agent — round 2 (critic fixes)
+- Shadows: key raised to 40 deg elevation (same azimuth), dir (-0.650, 0.643, 0.406); key 4.4, cool fill 0.75 x
+  (0.47, 0.64, 1.0), hemisphere 0.5 with a cooler sky. A shadowed cream page measures 55 % of the lit page (115 vs 209).
+  Key angular size 0.16 rad, minimum filter radius 3 shadow texels. AO radius 0.32 -> 0.16 units (tight fold line).
+- DOF: sharp-band knee 0.85 % of frame height (about 38 % of the height stays sharp), CoC capped at 1.65 % of the
+  height (15 px at 900). Focus depth is low-passed (0.45 s, snaps on jumps > 4 units). The CoC gain is fitted to the depth at
+  the frame centre, not to the traveller, so it is constant for a fixed rig: no pumping.
+- GLOBAL PATCH 2: `THREE.ShaderChunk.lights_physical_pars_fragment` (RE_Direct_Physical) adds paper translucency: a face
+  turned away from a directional light gets 30 % of that light, warm tinted, diffuse only. Shadow bias is now 0.034 units
+  (more than one card thickness) so the back of a lit card is not shadowed by the card itself; a second card still blocks.
+- Tone: exposure 0.8, contrast 1.34, vignette 13 %. Lamp falloff: lamp 5 units along the key direction, full mix,
+  clamp 0.28..1.35; frame corners away from the lamp measure about 1 stop under the centre.
+- Perf, three runs of the gate command at load average 6: p95 7.3, 6.4, 6.6 ms; 26 draw calls; 119k tris.
+- NEED from world agent for the table/page edge: the page mesh is 480 units and follows the traveller, so the table
+  (y = -0.12, look.js) is never visible. A finite page (or a page-edge position look can read) is required.
+
+## 2026-11-18 00:17 UTC tiles agent — round 2 rebuild (ids, sockets, node names unchanged)
+- Palette is now the concept palette exactly (page #EADFC6, core #F6F0E1, ochre #C9994F, terracotta #B05A40, moss #6E7D46,
+  sage #9FAE84, teal #5A9292, brown #74492F; face tint #E2B588). Cards are flat colour with ~1.4 % fibre grain.
+- Page is calm: ~1.1 % grain, faint grid line on tile borders, 6 small ticks per tile, path = 45 % ochre with brown
+  dashes and sparse dots, river = flat teal with cream wave strokes. Compass, survey marks, stipples and tints are gone.
+- 118 flaps (was 229), mean 174 tris per tile, max 574 (forest). glb 1.78 MB.
+- Hills are 5 (hill_big, up to 1.3 tall) or 3 (hill_small) layers in terracotta/ochre/moss/sage spanning the tile.
+  Trees are 0.75–1.1 tall leaf/round/conifer crowns. Each tile has one hero and at most two small props.
+- Edge-on fix: on tiles whose four sockets differ, every free-standing card sits at +-45 degrees (or is a V-fold), so
+  it reads at all four rotations. All-equal-socket tiles keep camera-facing cards (the world draws them at rot 0).
+- Bridge is now a raised arched deck: three hinged panels (flap_deck_a → b → c nested, top 0.2 high) between two
+  terracotta arch cards (0.42 high). The traveller still walks at y = 0 and passes through the deck.
+- House: both gables fall the same way and the side walls fall outward, so walls no longer cross mid-fold.
+  The house sits at y = -0.38 in its tile (z = +0.38 in three.js) to keep the folded gables inside the tile.
+- Card normals lean 0.6 toward up so no face shades much darker than the page. Back faces are real geometry with
+  their own normals and the same print as the front. A lighter back via COLOR_0 was tried and removed: it turned every
+  tile black in the game. If backs are still dark, that is shadowing, so the fill light has to lift it.
+- Traveller is 0.755 tall: hip y = 0.258 (body, legL, legR; legs at x = -0.022 / +0.022), shoulder y = 0.449 (armL, armR).
+  armR carries the walking stick. stand is a cream rectangular tab. Facing convention unchanged (+X, limbs swing on rotation.z).
+- CORRECTION: mean is 183 tris per tile, not 174.
+
+## 2026-11-18 00:22 UTC world agent — round 2 (critic fixes), tested against the 16:14 tiles.glb
+- Region retuned to the 9.5-unit camera: rise front 2.1 cells ahead walking across the page, 1.7 walking up (-Z),
+  1.4 walking down (+Z, the frame ends about 1.8 cells ahead), 1.5 cells to the sides, 1.0 behind; fold-down radii
+  +0.75 cell (1.75 behind). Cards beyond the front lie flat as printed card and rise as the traveller arrives.
+  Ripple 75 ms per cell of distance, flaps inside a tile spread over 0.6 s, nested flaps 70 ms after their parent.
+- Spring: rise 0.53-0.63 s, overshoot 10.4-14.8 %, extrema about -12 / +5 / -2 %, settle 0.99-1.25 s (mass 0.5-2).
+- Window 19x15 -> 13x11 cells. Tiles mesh 34-37k triangles (was 123k), whole frame 68-70k tris with the shadow pass.
+  Vertex buffer 19.2 MB (143 slots x 904 vertices x 37 floats; was 34 MB).
+- Vertex layout now carries COLOR_0 (the rebuilt glb uses vertex colours; without it every tile rendered black) and
+  three nested fold levels (bridge deck a > b > c).
+- Gutter: the unlit strip mesh is gone. The crease is in the tile material's fragment patch: a valley normal tilt plus
+  a thin fold line every 6 cells (x = 12k - 1), lit and shadowed like the page. No extra draw call.
+- Rotation: among rotations with identical sockets the one with the most card area facing the camera is drawn.
+  Pieces still edge-on (projected/total area < 0.2): house, village, house_with_path side walls at rot 0/2 (box sides,
+  expected); house_with_path at rot 1/3 front, back and one roof; bridge at rot 1 both arches.
+- Pond / road investigation: tools/fold_test.mjs now walks 30 s and checks, after every rendered frame, every cell in
+  the camera footprint: same (id, rot, drawn rot) as first seen, slot holds that tile, base vertices inside the cell,
+  triangles inside the draw range, no upload queued. 10,217 frames, 234 cells: 0 changed, 0 not drawn, 0 changed on
+  re-query. Four different pond cells crossed the footprint in that walk ((2,-3), (3,-7), (5,-13), (12,-27)); the first
+  leaves as the second enters. Nothing in the world swaps or drops a base in view; the critic saw two ponds.
+- Shadow pass: two programs carry the fold patch (depth + physical); shadows grow with the rise in the strips.
+- Perf gate x3 (load average 4.5): 418-425 fps, p95 2.9-3.1 ms, 26 calls, 70k tris.
+- NOT done: look agent's request for a finite page / page edge. The brief for the world is an endless page; lead to decide.
+- tools/fold_test.mjs --strip captures/name writes 12-frame strips (100 ms apart, grabbed in-page) walking e / n / s.

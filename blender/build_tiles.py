@@ -125,7 +125,7 @@ def main():
         tex_a = glb.add_texture(fh.read(), 'image/jpeg', repeat=False)
     with open(normal_path, 'rb') as fh:
         tex_n = glb.add_texture(fh.read(), 'image/jpeg', repeat=True)
-    glb.add_material('paper', tex_a, tex_n, roughness=0.92, normal_scale=0.7)
+    glb.add_material('paper', tex_a, tex_n, roughness=0.92, normal_scale=0.45)
 
     report = []
     doc = {'cell': 2, 'sockets': ['g', 'p', 'r'], 'tiles': []}
@@ -139,10 +139,11 @@ def main():
             return ((bx + (x + 1) / 2 * n) / S, (by + (1 - y) / 2 * n) / S)
 
         pos = [(-1, -1, BASE_Z), (1, -1, BASE_Z), (1, 1, BASE_Z), (-1, 1, BASE_Z)]
+        white = np.ones((4, 3), np.float32)
         base = (np.array(pos, np.float32), np.array([(0, 0, 1)] * 4, np.float32),
                 np.array([buv(x, y) for x, y, _ in pos], np.float32),
                 np.array([((x + 1) / 2, (1 - y) / 2) for x, y, _ in pos], np.float32),
-                np.array([0, 1, 2, 0, 2, 3], np.uint32))
+                np.array([0, 1, 2, 0, 2, 3], np.uint32), white)
         parts = [base]
         for f in t.flaps:
             if not f.tab:
@@ -166,13 +167,14 @@ def main():
                 uvs = uvs[::-1]
             parts.append((np.array([(v.x, v.y, TAB_Z) for v in wp], np.float32), np.array([(0, 0, 1)] * 4, np.float32),
                           np.array(uvs, np.float32), np.array([((v.x + 1) / 2, (1 - v.y) / 2) for v in wp], np.float32),
-                          np.array([0, 1, 2, 0, 2, 3], np.uint32)))
+                          np.array([0, 1, 2, 0, 2, 3], np.uint32), white))
         base_mesh = G.merge_meshes(parts)
         glb.add_child(root, glb.add_node('base', glb.add_mesh(f'{t.id}_base', base_mesh)))
         total = tris(base_mesh)
         nodes = {}
         for f in t.flaps:
-            mesh = G.card_mesh(f.outline, f.uv_outline, f.slab[0], f.slab[1], uvmap(f.shape), core_uv, rnd)
+            up = tuple(f.m_rest.to_3x3().inverted() @ G.Vector((0.0, 0.0, 1.0)))
+            mesh = G.card_mesh(f.outline, f.uv_outline, f.slab[0], f.slab[1], uvmap(f.shape), core_uv, rnd, up=up)
             total += tris(mesh)
             extras = {'foldAngle': round(f.fold, 5), 'delay': f.delay, 'mass': round(f.mass, 3)}
             node = glb.add_node(f.name, glb.add_mesh(f'{t.id}_{f.name}', mesh), f.origin, f.rot.to_quaternion(), extras)
@@ -188,33 +190,27 @@ def main():
 
     # ---- traveller: figure faces local +X, card normal is local Z (glTF), limbs swing about local Z
     trav = glb.add_node('traveller', root=True)
-    tt = G.TRAV_T
+    tt, kk = G.TRAV_T, G.TRAV_K
     ttris = 0
 
-    def part(name, shape, ya, yb, origin, extra=None):
-        nonlocal ttris
+    def tcard(shape, ya, yb, up=(0.0, 0.0, 1.0)):
         o = G.ccw(G.TRAV_SHAPES[shape][0])
-        mesh = G.card_mesh(o, o, ya, yb, uvmap(shape), core_uv, rnd)
-        if extra:
-            mesh = G.merge_meshes([mesh] + extra)
+        return G.card_mesh(G.scaled(o, kk), o, ya, yb, uvmap(shape), core_uv, rnd, up=up)
+
+    def part(name, mesh, origin=None):
+        nonlocal ttris
         ttris += tris(mesh)
         glb.add_child(trav, glb.add_node(name, glb.add_mesh(f'traveller_{name}', mesh), origin))
 
     hip, sh = G.HIP_Z, G.SHOULDER_Z
-    part('body', 'trav_body', -tt / 2, tt / 2, (0, 0, hip))
-    part('legL', 'trav_leg', 0.008, 0.008 + tt, (-0.016, 0, hip))
-    part('legR', 'trav_leg', -0.008 - tt, -0.008, (0.016, 0, hip))
-    part('armL', 'trav_arm', 0.022, 0.022 + tt, (0.0, 0, sh))
-    part('armR', 'trav_arm', -0.022 - tt, -0.022, (0.0, 0, sh))
-    so = G.ccw(G.TRAV_SHAPES['trav_stand'][0])
-    stand = G.transform_mesh(G.card_mesh(so, so, -0.012, -0.002, uvmap('trav_stand'), core_uv, rnd),
-                             Matrix.Rotation(-math.pi / 2, 4, 'X'))
-    to = G.ccw(G.TRAV_SHAPES['trav_tab'][0])
-    tab = G.transform_mesh(G.card_mesh(to, to, 0.036, 0.036 + tt, uvmap('trav_tab'), core_uv, rnd),
-                           Matrix.Translation((0.0, 0.0, 0.012)))
-    merged = G.merge_meshes([stand, tab])
-    ttris += tris(merged)
-    glb.add_child(trav, glb.add_node('stand', glb.add_mesh('traveller_stand', merged)))
+    part('body', tcard('trav_body', -tt / 2, tt / 2), (0, 0, hip))
+    part('legL', tcard('trav_leg', 0.009, 0.009 + tt), (-0.022, 0, hip))
+    part('legR', tcard('trav_leg', -0.009 - tt, -0.009), (0.022, 0, hip))
+    part('armL', tcard('trav_arm', 0.025, 0.025 + tt), (0.0, 0, sh))
+    part('armR', tcard('trav_arm_stick', -0.025 - tt, -0.025), (0.0, 0, sh))
+    stand = G.transform_mesh(tcard('trav_stand', -0.014, -0.002, up=(0.0, -1.0, 0.0)), Matrix.Rotation(-math.pi / 2, 4, 'X'))
+    tab = G.transform_mesh(tcard('trav_tab', 0.045, 0.045 + tt), Matrix.Translation((0.0, 0.0, 0.014)))
+    part('stand', G.merge_meshes([stand, tab]))
 
     size = glb.write(os.path.join(OUT, 'tiles.glb'))
     with open(os.path.join(OUT, 'tiles.json'), 'w') as fh:

@@ -1,256 +1,256 @@
 {
- "ppu": 224,
- "glb_bytes": 2581496,
- "traveller_tris": 352,
- "edge_mismatch": 0.004455204165744797,
+ "ppu": 208,
+ "glb_bytes": 1781780,
+ "traveller_tris": 240,
+ "edge_mismatch": 0.00403067382961525,
  "palette": {
-  "page": "#EFE3C6",
-  "core": "#FAF4E4",
-  "ochre": "#D9A441",
-  "terracotta": "#C4623F",
-  "moss": "#6F8448",
-  "sage": "#A9B58A",
-  "teal": "#5E9A9A",
-  "brown": "#6B4A32"
+  "page": "#EADFC6",
+  "core": "#F6F0E1",
+  "ochre": "#C9994F",
+  "terracotta": "#B05A40",
+  "moss": "#6E7D46",
+  "sage": "#9FAE84",
+  "teal": "#5A9292",
+  "brown": "#74492F"
  },
  "tiles": [
   {
    "id": "meadow_a",
    "sockets": "gggg",
-   "flaps": 7,
-   "tris": 380,
-   "flat_height": 0.0395
+   "flaps": 3,
+   "tris": 182,
+   "flat_height": 0.022
   },
   {
    "id": "meadow_b",
    "sockets": "gggg",
-   "flaps": 10,
-   "tris": 656,
-   "flat_height": 0.0395
+   "flaps": 3,
+   "tris": 232,
+   "flat_height": 0.022
   },
   {
    "id": "tree_single",
    "sockets": "gggg",
-   "flaps": 6,
-   "tris": 354,
-   "flat_height": 0.057
+   "flaps": 3,
+   "tris": 140,
+   "flat_height": 0.0395
   },
   {
    "id": "forest",
    "sockets": "gggg",
-   "flaps": 10,
-   "tris": 710,
-   "flat_height": 0.0745
+   "flaps": 6,
+   "tris": 574,
+   "flat_height": 0.057
   },
   {
    "id": "hill_small",
    "sockets": "gggg",
-   "flaps": 5,
-   "tris": 412,
+   "flaps": 3,
+   "tris": 240,
    "flat_height": 0.057
   },
   {
    "id": "hill_big",
    "sockets": "gggg",
-   "flaps": 8,
-   "tris": 490,
+   "flaps": 7,
+   "tris": 452,
    "flat_height": 0.092
   },
   {
    "id": "house",
    "sockets": "gggg",
-   "flaps": 10,
-   "tris": 490,
-   "flat_height": 0.127
+   "flaps": 8,
+   "tris": 346,
+   "flat_height": 0.0745
   },
   {
    "id": "village",
    "sockets": "gggg",
-   "flaps": 21,
-   "tris": 524,
-   "flat_height": 0.1095
+   "flaps": 19,
+   "tris": 402,
+   "flat_height": 0.1445
   },
   {
    "id": "pond",
    "sockets": "gggg",
-   "flaps": 9,
-   "tris": 308,
-   "flat_height": 0.0395
+   "flaps": 4,
+   "tris": 114,
+   "flat_height": 0.022
   },
   {
    "id": "rock",
    "sockets": "gggg",
-   "flaps": 8,
-   "tris": 280,
+   "flaps": 3,
+   "tris": 88,
    "flat_height": 0.0395
   },
   {
    "id": "path_straight",
    "sockets": "pgpg",
-   "flaps": 6,
-   "tris": 344,
+   "flaps": 2,
+   "tris": 166,
    "flat_height": 0.022
   },
   {
    "id": "path_corner",
    "sockets": "ppgg",
-   "flaps": 5,
-   "tris": 328,
+   "flaps": 1,
+   "tris": 92,
    "flat_height": 0.022
   },
   {
    "id": "path_t",
    "sockets": "pppg",
-   "flaps": 5,
-   "tris": 234,
-   "flat_height": 0.0395
+   "flaps": 2,
+   "tris": 110,
+   "flat_height": 0.022
   },
   {
    "id": "path_cross",
    "sockets": "pppp",
-   "flaps": 6,
-   "tris": 312,
-   "flat_height": 0.0395
+   "flaps": 2,
+   "tris": 174,
+   "flat_height": 0.022
   },
   {
    "id": "path_end",
    "sockets": "pggg",
-   "flaps": 7,
-   "tris": 462,
-   "flat_height": 0.0395
+   "flaps": 2,
+   "tris": 110,
+   "flat_height": 0.022
   },
   {
    "id": "house_with_path",
    "sockets": "ggpg",
-   "flaps": 11,
-   "tris": 484,
-   "flat_height": 0.1095
+   "flaps": 7,
+   "tris": 164,
+   "flat_height": 0.0745
   },
   {
    "id": "river_straight",
    "sockets": "rgrg",
-   "flaps": 6,
-   "tris": 230,
+   "flaps": 2,
+   "tris": 158,
    "flat_height": 0.022
   },
   {
    "id": "river_corner",
    "sockets": "rrgg",
-   "flaps": 6,
-   "tris": 278,
+   "flaps": 2,
+   "tris": 158,
    "flat_height": 0.0395
   },
   {
    "id": "river_source",
    "sockets": "rggg",
-   "flaps": 9,
-   "tris": 308,
-   "flat_height": 0.057
+   "flaps": 3,
+   "tris": 80,
+   "flat_height": 0.022
   },
   {
    "id": "river_t",
    "sockets": "rrrg",
-   "flaps": 5,
-   "tris": 196,
+   "flaps": 2,
+   "tris": 94,
    "flat_height": 0.022
   },
   {
    "id": "river_cross",
    "sockets": "rrrr",
-   "flaps": 6,
-   "tris": 230,
-   "flat_height": 0.0395
+   "flaps": 2,
+   "tris": 70,
+   "flat_height": 0.022
   },
   {
    "id": "bridge",
    "sockets": "rprp",
-   "flaps": 7,
-   "tris": 432,
-   "flat_height": 0.0395
+   "flaps": 6,
+   "tris": 252,
+   "flat_height": 0.057
   },
   {
    "id": "spring_path_a",
    "sockets": "prgg",
-   "flaps": 5,
-   "tris": 286,
-   "flat_height": 0.022
+   "flaps": 3,
+   "tris": 208,
+   "flat_height": 0.0395
   },
   {
    "id": "spring_path_b",
    "sockets": "rpgg",
-   "flaps": 5,
-   "tris": 286,
-   "flat_height": 0.022
+   "flaps": 3,
+   "tris": 176,
+   "flat_height": 0.057
   },
   {
    "id": "spring_path_c",
    "sockets": "pgrg",
-   "flaps": 5,
-   "tris": 286,
-   "flat_height": 0.022
+   "flaps": 3,
+   "tris": 208,
+   "flat_height": 0.057
   },
   {
    "id": "corner_spring_a",
    "sockets": "pprg",
-   "flaps": 4,
-   "tris": 238,
-   "flat_height": 0.022
+   "flaps": 2,
+   "tris": 94,
+   "flat_height": 0.0395
   },
   {
    "id": "straight_spring",
    "sockets": "prpg",
-   "flaps": 4,
-   "tris": 238,
-   "flat_height": 0.0395
+   "flaps": 2,
+   "tris": 158,
+   "flat_height": 0.022
   },
   {
    "id": "corner_spring_b",
    "sockets": "rppg",
-   "flaps": 4,
-   "tris": 238,
-   "flat_height": 0.022
+   "flaps": 2,
+   "tris": 126,
+   "flat_height": 0.0395
   },
   {
    "id": "landing_corner_a",
    "sockets": "rrpg",
-   "flaps": 5,
-   "tris": 286,
+   "flaps": 2,
+   "tris": 174,
    "flat_height": 0.0395
   },
   {
    "id": "landing_straight",
    "sockets": "rprg",
-   "flaps": 5,
-   "tris": 286,
+   "flaps": 2,
+   "tris": 142,
    "flat_height": 0.0395
   },
   {
    "id": "landing_corner_b",
    "sockets": "prrg",
-   "flaps": 5,
-   "tris": 286,
+   "flaps": 2,
+   "tris": 174,
    "flat_height": 0.022
   },
   {
    "id": "junction_spring",
    "sockets": "pppr",
-   "flaps": 4,
-   "tris": 238,
+   "flaps": 2,
+   "tris": 94,
    "flat_height": 0.022
   },
   {
    "id": "twin_corners",
    "sockets": "pprr",
-   "flaps": 5,
-   "tris": 328,
+   "flaps": 1,
+   "tris": 124,
    "flat_height": 0.022
   },
   {
    "id": "landing_t",
    "sockets": "prrr",
-   "flaps": 5,
-   "tris": 286,
-   "flat_height": 0.0395
+   "flaps": 2,
+   "tris": 142,
+   "flat_height": 0.022
   }
  ]
 }

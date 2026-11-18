@@ -32,10 +32,10 @@ export function flapParams(mass) {
   const m = Math.min(2, Math.max(0.5, mass || 1));
   const k = Math.log2(m); // -1..1
   return {
-    riseT: 0.51 + 0.07 * k, // target ramp duration, s
-    omega: 23 - 4 * k, // wobble spring, rad/s
-    zeta: 0.29,
-    ramp: 2.9 + 0.8 * k, // ramp exponent: higher = faster arrival = more overshoot
+    riseT: 0.55 + 0.045 * k, // target ramp duration, s
+    omega: 22.5 - 3 * k, // wobble spring, rad/s
+    zeta: 0.275,
+    ramp: 2.9 + 0.42 * k, // ramp exponent: higher = faster arrival = more overshoot
     fallOmega: 15 - 2.5 * k,
     fallZeta: 0.8,
   };

@@ -56,7 +56,7 @@ export function patchShadowChunk({ blockerTaps = 12, filterTaps = 16 } = {}) {
 			gap = hits / gap;
 
 			// Filter radius grows with the gap: sharp at contact, wide far from the caster.
-			float r = clamp( gap * shadowRadius, texel * 1.6, searchR );
+			float r = clamp( gap * shadowRadius, texel * 3.0, searchR );
 			float lit = 0.0;
 			for ( int i = 0; i < ${filterTaps}; i ++ ) {
 				vec2 o = atlasDisk( i * 4 + k, ${filterTaps * 4}, 1.7 ) * r;
@@ -70,4 +70,22 @@ export function patchShadowChunk({ blockerTaps = 12, filterTaps = 16 } = {}) {
 
 	`;
   THREE.ShaderChunk.shadowmap_pars_fragment = chunk.slice(0, start) + pcss + chunk.slice(end + 1);
+}
+
+// Paper translucency: a card lit from behind shows its colour, warm, at `amount` of the front light.
+export function patchTranslucency(amount = 0.3) {
+  const name = 'lights_physical_pars_fragment';
+  const chunk = THREE.ShaderChunk[name];
+  const a = 'vec3 irradiance = dotNL * directLight.color;';
+  const b = 'reflectedLight.directDiffuse += irradiance * diffuseBRDF * ( 1.0 - F );';
+  const start = chunk.indexOf('void RE_Direct_Physical');
+  if (start < 0 || chunk.indexOf(a, start) < 0 || chunk.indexOf(b, start) < 0) {
+    console.warn('look: light chunk layout changed, paper translucency is off');
+    return;
+  }
+  const through = `vec3 atlasThrough = ${amount.toFixed(3)} * saturate( - dot( geometryNormal, directLight.direction ) )`
+    + ' * directLight.color * vec3( 1.0, 0.84, 0.66 );';
+  THREE.ShaderChunk[name] = chunk.slice(0, start) + chunk.slice(start)
+    .replace(a, `${a}\n\t${through}`)
+    .replace(b, `${b}\n\treflectedLight.directDiffuse += atlasThrough * diffuseBRDF;`);
 }

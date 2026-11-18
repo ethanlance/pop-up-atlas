@@ -3,14 +3,14 @@
 // Frame: shadow map -> scene (HDR, MSAA, depth) -> AO (half res) -> CoC prep -> bokeh gather -> bloom -> composite.
 import * as THREE from 'three';
 import { addDebugCards } from './look_debug.js';
-import { patchShadowChunk, SHADOW_RANGE } from './look_shadow.js';
+import { patchShadowChunk, patchTranslucency, SHADOW_RANGE } from './look_shadow.js';
 import * as SH from './look_shaders.js';
 
 // Direction from the focus to each light (three.js axes), from the concept frames.
-const KEY_DIR = new THREE.Vector3(-0.719, 0.530, 0.449).normalize();
+const KEY_DIR = new THREE.Vector3(-0.650, 0.643, 0.406).normalize(); // concept azimuth, raised to 40 degrees
 const FILL_DIR = new THREE.Vector3(0.360, 0.883, -0.302).normalize();
 const KEY_COLOR = new THREE.Color().setRGB(1.0, 0.77, 0.50); // 3000 K seen at a 3900 K white balance, a little lifted
-const FILL_COLOR = new THREE.Color().setRGB(0.27, 0.443, 1.0);
+const FILL_COLOR = new THREE.Color().setRGB(0.47, 0.64, 1.0); // #8FA3C8 at full value
 const BOUNCE_DIR = new THREE.Vector3(0.80, 0.14, -0.50).normalize(); // light off the page onto card backs
 const BOUNCE_COLOR = new THREE.Color().setRGB(1.0, 0.78, 0.55);
 const TABLE_COLOR = new THREE.Color(0x3b2416);
@@ -22,26 +22,27 @@ export function createLook({ renderer, scene, camera }) {
   const params = new URLSearchParams(location.search);
   const low = params.get('q') === 'low';
   const num = (k, d) => (params.has(k) ? Number(params.get(k)) : d);
-  const keyAngle = num('soft', 0.22); // angular diameter of the key in radians; sets the penumbra width
+  const keyAngle = num('soft', 0.16); // angular diameter of the key in radians; sets the penumbra width
 
   // ---- lights -------------------------------------------------------------------------------------------------
   patchShadowChunk({ blockerTaps: num('btaps', low ? 8 : 16), filterTaps: num('ftaps', low ? 8 : 16) });
+  patchTranslucency(num('through', 0.3));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.BasicShadowMap; // raw depth; the patched chunk does the PCSS filter
   renderer.toneMapping = THREE.NoToneMapping;
   renderer.info.autoReset = false; // count the draw calls of all passes in one frame
 
-  const key = new THREE.DirectionalLight(KEY_COLOR, num('key', 5.6));
+  const key = new THREE.DirectionalLight(KEY_COLOR, num('key', 4.4));
   key.castShadow = true;
   const mapSize = num('smap', low ? 1024 : 2048);
   key.shadow.mapSize.set(mapSize, mapSize);
-  key.shadow.bias = -0.02 / SHADOW_RANGE;
-  key.shadow.normalBias = 0.006;
+  key.shadow.bias = -0.034 / SHADOW_RANGE; // more than one card thickness: light reaches the back of a lit card
+  key.shadow.normalBias = 0.003;
   key.shadow.camera.near = 0.1;
   key.shadow.camera.far = SHADOW_RANGE;
-  const fill = new THREE.DirectionalLight(FILL_COLOR, num('fill', 0.10));
-  const hemi = new THREE.HemisphereLight(new THREE.Color().setRGB(0.55, 0.50, 0.64),
-    new THREE.Color().setRGB(0.95, 0.72, 0.50), num('amb', 0.22));
+  const fill = new THREE.DirectionalLight(FILL_COLOR, num('fill', 0.75));
+  const hemi = new THREE.HemisphereLight(new THREE.Color().setRGB(0.46, 0.50, 0.74),
+    new THREE.Color().setRGB(0.95, 0.72, 0.50), num('amb', 0.5));
   const bounce = new THREE.DirectionalLight(BOUNCE_COLOR, num('bounce', 0.8));
   scene.add(key, key.target, fill, fill.target, bounce, bounce.target, hemi);
 
@@ -105,11 +106,11 @@ export function createLook({ renderer, scene, camera }) {
     { blending: THREE.AdditiveBlending, transparent: true });
   const finalMat = pass(SH.FINAL, { tScene: U(rtScene.texture), tDepth: U(rtScene.depthTexture), tAo: U(rtAo.texture),
     tDof: U(rtDof.texture), tBloom: U(rtBloom[0].texture), lens, cocLimit, texel, aoTint,
-    exposure: U(num('exp', 0.98)), contrast: U(num('con', 1.22)), saturation: U(num('sat', 1.08)),
-    bloom: U(new THREE.Vector4(1.0, 0.72, 0.5, num('bloom', 0.08))), vignette: U(num('vig', 0.20)),
+    exposure: U(num('exp', 0.8)), contrast: U(num('con', 1.34)), saturation: U(num('sat', 1.08)),
+    bloom: U(new THREE.Vector4(1.0, 0.72, 0.5, num('bloom', 0.08))), vignette: U(num('vig', 0.13)),
     grain: U(num('grain', 0.011)), time: U(0), aspect: U(1), projInfo, camWorld: U(camera.matrixWorld),
-    lantern: U(new THREE.Vector4()), pool: U(num('pool', 0.8)) });
-  const lampDistance = num('lamp', 14);
+    lantern: U(new THREE.Vector4()), pool: U(num('pool', 1.0)) });
+  const lampDistance = num('lamp', 5);
   const useAo = !low && num('ao', 1) > 0;
   const dofOn = num('dof', 1) > 0;
 
@@ -127,8 +128,8 @@ export function createLook({ renderer, scene, camera }) {
   const clearColor = new THREE.Color();
   let shadowSize = 0;
 
-  // Fits the shadow camera to the visible page. Returns |1 - focusDepth/depth| at the top/bottom of the page.
-  function fitToView(focusDepth) {
+  // Fits the shadow camera to the visible page. Returns |1 - centreDepth/depth| at the top/bottom of the page.
+  function fitToView(centreDepth) {
     // Light basis that three.js builds from `up`: x = up x z, y = z x x, with z toward the light.
     v.set(0, 1, 0).applyQuaternion(camera.quaternion);
     key.shadow.camera.up.copy(v);
@@ -141,7 +142,7 @@ export function createLook({ renderer, scene, camera }) {
       for (let h = 0; h <= MAX_HEIGHT; h += MAX_HEIGHT) {
         const t = dir.y < -0.05 ? Math.min((h - camera.position.y) / dir.y, 90) : 90;
         if (i >= 4) {
-          if (h === 0) edgeDepth = Math.max(edgeDepth, Math.abs(1 - focusDepth / (dir.dot(camZ) * t)));
+          if (h === 0) edgeDepth = Math.max(edgeDepth, Math.abs(1 - centreDepth / (dir.dot(camZ) * t)));
           continue;
         }
         v.copy(camera.position).addScaledVector(dir, t);
@@ -175,20 +176,27 @@ export function createLook({ renderer, scene, camera }) {
   }
 
   let time = 0;
+  let focusDepth = -1;
   function render(dt = 0) {
     time += dt;
     renderer.info.reset();
     camera.updateMatrixWorld();
     camZ.set(0, 0, -1).applyQuaternion(camera.quaternion);
-    const focusDepth = Math.max(v.copy(focus).sub(camera.position).dot(camZ), camera.near + 0.01);
-    const edgeDepth = fitToView(focusDepth);
-    // CoC in pixels = gain * (1 - focusDepth / depth). The gain puts `blur` at the top/bottom edge of the page.
-    const edgeBlur = num('blur', 0.03) * size.y; // 27 px at 900 px tall
+    // Focus distance: the traveller point, low-passed (0.45 s), so hops and camera lag do not pump the blur.
+    const wantDepth = Math.max(v.copy(focus).sub(camera.position).dot(camZ), camera.near + 0.01);
+    const jump = focusDepth < 0 || Math.abs(wantDepth - focusDepth) > 4;
+    focusDepth = jump ? wantDepth : focusDepth + (wantDepth - focusDepth) * (1 - Math.exp(-dt / 0.45));
+    // The gain is fitted to the depth at the frame centre, which is constant for a fixed rig: no pumping.
+    dir.set(0, 0, 0.5).unproject(camera).sub(camera.position).normalize();
+    const centreDepth = dir.y < -0.05 ? ((focus.y - camera.position.y) / dir.y) * dir.dot(camZ) : focusDepth;
+    const edgeDepth = fitToView(centreDepth);
+    // CoC in pixels = gain * (1 - focusDepth / depth); `blur` is the uncapped CoC at the top/bottom page edge.
+    const edgeBlur = num('blur', 0.024) * size.y;
     const gain = dofOn ? Math.min(edgeBlur / Math.max(edgeDepth, 0.02), size.y * 0.5) : 0;
     lens.value.set(camera.near, camera.far, focusDepth, gain);
-    cocLimit.value.set(num('band', 0.004) * size.y, 0.034 * size.y);
+    cocLimit.value.set(num('band', 0.0085) * size.y, num('maxblur', 0.0165) * size.y); // cap 15 px at 900 px tall
     const tanHalf = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-    projInfo.value.set(tanHalf * camera.aspect, tanHalf, num('aor', 0.32), num('ao', 0.8));
+    projInfo.value.set(tanHalf * camera.aspect, tanHalf, num('aor', 0.16), num('ao', 0.9));
     finalMat.uniforms.time.value = time;
     v.copy(focus).addScaledVector(KEY_DIR, lampDistance);
     finalMat.uniforms.lantern.value.set(v.x, v.y, v.z, lampDistance);

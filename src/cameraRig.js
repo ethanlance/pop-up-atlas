@@ -3,9 +3,9 @@
 import * as THREE from 'three';
 
 const PITCH = THREE.MathUtils.degToRad(55); // degrees below the horizon
-const DISTANCE = 13; // lead: pulled in to ~11.5 units across so cards show thickness (see LOG)
+const DISTANCE = 9.5; // lead, critic round 1: ~8.4 units across so the traveller is ~85 px tall at 720p
 const OMEGA = 7; // follow spring: ramp lag 2/OMEGA = 0.29 s, 63 % step time 2.15/OMEGA = 0.31 s
-const LOOK_AHEAD = 1.3; // units the view leads in the heading direction
+const LOOK_AHEAD = 1.1; // units the view leads in the heading direction
 const LOOK_OMEGA = 2.2; // slow, so reversing direction pans gently
 const TELEPORT_SPEED = 8; // target speed above this is a jump, not motion
 

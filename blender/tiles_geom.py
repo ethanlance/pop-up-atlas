@@ -158,54 +158,65 @@ def o_rect(x0, x1, z0, z1):
     return [(x0, z0), (x1, z0), (x1, z1), (x0, z1)]
 
 
-HOUSE = dict(w=0.9, d=0.66, h=0.56, rise=0.45)
+HOUSE = dict(w=0.78, d=0.66, h=0.48, rise=0.48)
 
 
 def o_gable(chimney=False):
     w, h, rise = HOUSE['w'], HOUSE['h'], HOUSE['rise']
     pts = [(-w / 2, 0), (w / 2, 0), (w / 2, h)]
     if chimney:
-        x0, x1, zt = 0.3, 0.19, h + rise + 0.1
+        x0, x1, zt = 0.3, 0.19, h + rise + 0.08
         pts += [(x0, h + rise * (1 - x0 / (w / 2))), (x0, zt), (x1, zt), (x1, h + rise * (1 - x1 / (w / 2)))]
     pts += [(0, h + rise), (-w / 2, h)]
     return pts
 
 
-def o_parapet(length=1.24, hend=0.13, hmid=0.3, a=0.33, ah=0.17, n=10):
-    pts = [(-length / 2, 0), (-a, 0)]
+def o_arch(half=0.62, top=0.42, a=0.38, ah=0.2, n=9):
+    pts = [(-half, 0), (-a, 0)]
     for i in range(1, n):
         t = math.pi * (1 - i / n)
         pts.append((a * math.cos(t), ah * math.sin(t)))
-    pts += [(a, 0), (length / 2, 0), (length / 2, hend + 0.05), (length / 2 - 0.07, hend + 0.05), (length / 2 - 0.07, hend)]
-    m = 12
-    x_in = length / 2 - 0.07
-    for i in range(1, m):
-        x = x_in - 2 * x_in * i / m
-        pts.append((x, hend + (hmid - hend) * math.cos(math.pi / 2 * x / x_in) ** 1.2))
-    pts += [(-x_in, hend), (-x_in, hend + 0.05), (-length / 2, hend + 0.05)]
+    pts += [(a, 0), (half, 0)]
+    for i in range(1, 12):
+        t = math.pi * i / 12
+        pts.append((half * math.cos(t), top * math.sin(t) ** 0.8))
     return pts
 
 
-def o_rock(w=0.34, h=0.26, right=True):
-    pts = [(0, 0), (w, 0), (w * 0.92, h * 0.38), (w * 0.62, h * 0.82), (w * 0.3, h), (0, h * 0.9)]
+def o_rock(w=0.5, h=0.42, right=True):
+    pts = [(0, 0), (w, 0), (w * 0.9, h * 0.4), (w * 0.6, h * 0.84), (w * 0.3, h), (0, h * 0.92)]
     return pts if right else [(-x, z) for x, z in pts]
 
 
-def o_half_tree(r=0.42, h=1.3, tw=0.05, right=True, n=12):
+def o_half_tree(r=0.42, h=1.25, tw=0.05, right=True, n=10):
     cz = h - r * 1.05
     pts = [(0, 0), (tw, 0)]
     a0 = -math.pi / 2 + math.asin(tw / r)
     for i in range(n + 1):
         a = a0 + (math.pi / 2 - a0) * i / n
-        m = 1 + (0.08 * math.cos(7 * a + 1.0) if 0 < i < n else 0)
-        pts.append((r * m * math.cos(a), cz + r * 1.05 * m * math.sin(a)))
+        pts.append((r * math.cos(a), cz + r * 1.05 * math.sin(a)))
     pts[-1] = (0.0, h)
     return pts if right else [(-x, z) for x, z in pts]
 
 
+def o_leaf_tree(rx_=0.24, h=1.0, tw=0.04, n=14):
+    """Leaf-shaped crown with a pointed top on a short trunk."""
+    zb = h * 0.3
+    pts = [(-tw, 0), (tw, 0), (tw, zb)]
+    for i in range(1, n):
+        t = i / n
+        pts.append((rx_ * math.sin(math.pi * t) ** 0.7 * (1 - 0.25 * t), zb + (h - zb) * t))
+    pts.append((0.0, h))
+    for i in range(n - 1, 0, -1):
+        t = i / n
+        pts.append((-rx_ * math.sin(math.pi * t) ** 0.7 * (1 - 0.25 * t), zb + (h - zb) * t))
+    pts.append((-tw, zb))
+    return pts
+
+
 def o_sign():
-    return [(-0.016, 0), (0.016, 0), (0.016, 0.25), (0.19, 0.25), (0.235, 0.297), (0.19, 0.345), (0.016, 0.345),
-            (0.016, 0.385), (-0.016, 0.385), (-0.016, 0.345), (-0.07, 0.345), (-0.07, 0.25), (-0.016, 0.25)]
+    return [(-0.02, 0), (0.02, 0), (0.02, 0.25), (0.2, 0.25), (0.25, 0.3), (0.2, 0.35), (0.02, 0.35),
+            (0.02, 0.4), (-0.02, 0.4), (-0.02, 0.35), (-0.08, 0.35), (-0.08, 0.25), (-0.02, 0.25)]
 
 
 def o_fence(w=0.56, h=0.17, n=6):
@@ -221,95 +232,6 @@ def o_fence(w=0.56, h=0.17, n=6):
     return pts
 
 
-def o_milestone(w=0.1, h=0.15):
-    return [(-w / 2, 0), (w / 2, 0), (w / 2, h * 0.7), (w * 0.3, h * 0.94), (0, h), (-w * 0.3, h * 0.94), (-w / 2, h * 0.7)]
-
-
-def slope_len():
-    return math.hypot(HOUSE['w'] / 2, HOUSE['rise'])
-
-
-# name -> (outline, style, margin)
-SHAPES = {
-    'tree_round_a': (o_tree_round(0.27, 0.86, phase=0.4), 'tree_round', 0.012),
-    'tree_round_b': (o_tree_round(0.32, 1.02, lobes=8, phase=2.0), 'tree_round', 0.012),
-    'tree_oval': (o_tree_oval(), 'tree_oval', 0.012),
-    'conifer_a': (o_conifer(0.44, 1.08), 'conifer', 0.012),
-    'conifer_b': (o_conifer(0.36, 0.88, tiers=3), 'conifer', 0.012),
-    'bush_a': (o_bush(0.38, 0.22), 'bush', 0.01),
-    'hay': (o_bush(0.3, 0.26, lobes=1), 'hay', 0.01),
-    'tuft_a': (o_tuft(0.2, 0.15, 5, 1), 'tuft', 0.006),
-    'tuft_b': (o_tuft(0.26, 0.12, 6, 2), 'tuft', 0.006),
-    'tuft_c': (o_tuft(0.15, 0.19, 4, 5), 'tuft', 0.006),
-    'flower_a': (o_flower(0.24, 0.05), 'flower_a', 0.006),
-    'flower_b': (o_flower(0.19, 0.044), 'flower_b', 0.006),
-    'reeds_a': (o_reeds(0.14, 0.36, 3), 'reeds', 0.006),
-    'reeds_b': (o_reeds(0.17, 0.28, 8), 'reeds', 0.006),
-    'rock_r': (o_rock(0.34, 0.26, True), 'rock', 0.01),
-    'rock_l': (o_rock(0.27, 0.2, False), 'rock', 0.01),
-    'vtree_r': (o_half_tree(right=True), 'vtree', 0.012),
-    'vtree_l': (o_half_tree(right=False), 'vtree', 0.012),
-    'sign': (o_sign(), 'sign', 0.007),
-    'fence': (o_fence(), 'fence', 0.007),
-    'milestone': (o_milestone(), 'milestone', 0.007),
-    'house_front': (o_gable(False), 'wall_front', 0.012),
-    'house_back': (o_gable(True), 'wall_back', 0.012),
-    'house_side': (o_rect(-HOUSE['d'] / 2, HOUSE['d'] / 2, 0, HOUSE['h']), 'wall_side', 0.012),
-    'house_roof': (o_rect(-HOUSE['d'] / 2 - 0.06, HOUSE['d'] / 2 + 0.06, -0.08, slope_len() + 0.012), 'roof', 0.01),
-    'parapet': (o_parapet(), 'parapet', 0.01),
-    'hillbig_1': (o_peak(1.5, 1.2, 4), 'hill_peak', 0.014),
-    'hillbig_2': (o_hill(1.84, 0.9, 12, jag=0.1, skew=0.12), 'hill_far', 0.014),
-    'hillbig_3': (o_hill(1.88, 0.6, 7, skew=-0.15), 'hill_mid', 0.014),
-    'hillbig_4': (o_hill(1.6, 0.34, 21), 'hill_near', 0.014),
-    'hillsmall_1': (o_hill(1.2, 0.56, 31, skew=0.1), 'hill_far', 0.014),
-    'hillsmall_2': (o_hill(1.42, 0.4, 33, skew=-0.1), 'hill_mid', 0.014),
-    'hillsmall_3': (o_hill(1.1, 0.24, 35), 'hill_near', 0.014),
-    'strut_a': (o_rect(-0.09, 0.09, 0, 0.55 / math.sin(math.radians(60))), 'strut', 0.0),
-    'strut_b': (o_rect(-0.09, 0.09, 0, 0.4 / math.sin(math.radians(60))), 'strut', 0.0),
-}
-
-# traveller card outlines, in the card plane (x forward, z up), relative to the part's joint
-TRAV_T = 0.012
-HIP_Z = 0.19
-SHOULDER_Z = 0.33
-
-
-def o_trav_body():
-    hc, hr = (0.005, 0.225), 0.065
-
-    def arc(a0, a1, n):
-        return [(hc[0] + hr * math.cos(math.radians(a0 + (a1 - a0) * k / n)),
-                 hc[1] + hr * math.sin(math.radians(a0 + (a1 - a0) * k / n))) for k in range(n + 1)]
-
-    pts = [(-0.075, -0.045), (0.07, -0.045), (0.058, 0.06), (0.056, 0.148), (0.026, 0.158)]
-    front = arc(-72, 48, 8)
-    front[4] = (front[4][0] + 0.012, front[4][1])
-    pts += front
-    pts += [(0.125, 0.268), (0.125, 0.283), (0.064, 0.29), (0.058, 0.348), (0.03, 0.362), (0.0, 0.352), (-0.03, 0.362),
-            (-0.058, 0.348), (-0.064, 0.29), (-0.12, 0.283), (-0.12, 0.268)]
-    pts += arc(132, 212, 5)
-    pts += [(-0.11, 0.2), (-0.165, 0.176), (-0.156, 0.157), (-0.105, 0.17), (-0.052, 0.152), (-0.06, 0.145),
-            (-0.054, 0.066), (-0.13, 0.066), (-0.14, 0.056), (-0.14, -0.015), (-0.13, -0.025), (-0.071, -0.025)]
-    return pts
-
-
-def o_trav_leg():
-    return [(-0.032, 0.02), (0.032, 0.02), (0.028, -0.13), (0.08, -0.146), (0.09, -0.178), (-0.03, -0.178)]
-
-
-def o_trav_arm():
-    pts = [(-0.023, 0.02), (0.023, 0.02), (0.021, -0.105)]
-    for i in range(7):
-        a = math.pi / 2 * 0.6 - (math.pi * 1.2) * i / 6
-        pts.append((0.0 + 0.027 * math.cos(a), -0.125 + 0.027 * math.sin(a)))
-    pts.append((-0.021, -0.105))
-    return pts
-
-
-def o_trav_stand(n=14):
-    return [(0.19 * math.cos(2 * math.pi * i / n), 0.115 * math.sin(2 * math.pi * i / n)) for i in range(n)]
-
-
 def o_sheep():
     pts = [(-0.075, 0), (-0.05, 0), (-0.05, 0.045), (0.035, 0.045), (0.035, 0), (0.06, 0), (0.06, 0.05),
            (0.1, 0.07), (0.135, 0.072), (0.142, 0.11), (0.108, 0.136)]
@@ -321,13 +243,92 @@ def o_sheep():
     return pts
 
 
-SHAPES['sheep'] = (o_sheep(), 'sheep', 0.006)
+def slope_len():
+    return math.hypot(HOUSE['w'] / 2, HOUSE['rise'])
+
+
+DECK = dict(run=0.36, rise=0.2, top=0.48, hw=0.25)
+DECK['ramp'] = math.hypot(DECK['run'], DECK['rise'])
+DECK['elev'] = math.degrees(math.atan2(DECK['rise'], DECK['run']))
+
+# name -> (outline, style, margin)
+SHAPES = {
+    'tree_leaf_moss': (o_leaf_tree(0.25, 1.0), 'crown_moss', 0.0),
+    'tree_leaf_terra': (o_leaf_tree(0.22, 0.85), 'crown_terra', 0.0),
+    'tree_leaf_sage': (o_leaf_tree(0.26, 1.1), 'crown_sage', 0.0),
+    'tree_round_ochre': (o_tree_round(0.3, 0.92, tw=0.04, lobes=9, phase=0.4), 'crown_ochre', 0.0),
+    'tree_round_moss': (o_tree_round(0.33, 1.05, tw=0.04, lobes=8, phase=2.0), 'crown_moss', 0.0),
+    'conifer': (o_conifer(0.52, 1.1, tw=0.04, th=0.18, tiers=3), 'conifer', 0.0),
+    'bush': (o_bush(0.5, 0.3), 'bush', 0.0),
+    'hay': (o_bush(0.42, 0.36, lobes=1), 'hay', 0.0),
+    'tuft': (o_tuft(0.3, 0.24, 5, 1), 'tuft', 0.0),
+    'flower': (o_flower(0.36, 0.075, 0.014), 'flower', 0.0),
+    'reeds': (o_tuft(0.24, 0.5, 4, 3), 'reeds', 0.0),
+    'rock_r': (o_rock(0.5, 0.42, True), 'rock', 0.0),
+    'rock_l': (o_rock(0.4, 0.32, False), 'rock', 0.0),
+    'vtree_r': (o_half_tree(right=True), 'vtree', 0.0),
+    'vtree_l': (o_half_tree(right=False), 'vtree', 0.0),
+    'sign': (o_sign(), 'sign', 0.007),
+    'fence': (o_fence(), 'fence', 0.007),
+    'sheep': (o_sheep(), 'sheep', 0.006),
+    'house_front': (o_gable(True), 'wall_front', 0.01),
+    'house_back': (o_gable(False), 'wall_back', 0.01),
+    'house_side': (o_rect(-HOUSE['d'] / 2, HOUSE['d'] / 2, 0, HOUSE['h']), 'wall_side', 0.01),
+    'house_roof': (o_rect(-HOUSE['d'] / 2 - 0.05, HOUSE['d'] / 2 + 0.05, -0.04, slope_len() + 0.012), 'roof', 0.008),
+    'arch': (o_arch(), 'arch', 0.0),
+    'deck_ramp': (o_rect(-DECK['hw'], DECK['hw'], 0, DECK['ramp']), 'deck', 0.0),
+    'deck_top': (o_rect(-DECK['hw'], DECK['hw'], 0, DECK['top']), 'deck', 0.0),
+    'hillbig_1': (o_hill(1.7, 1.3, 4, n=22, skew=0.1), 'hill_terra', 0.0),
+    'hillbig_2': (o_hill(1.9, 1.05, 12, n=22, skew=-0.14), 'hill_ochre', 0.0),
+    'hillbig_3': (o_hill(1.8, 0.8, 7, n=22, skew=0.16), 'hill_moss', 0.0),
+    'hillbig_4': (o_hill(1.9, 0.55, 21, n=22, skew=-0.1), 'hill_sage', 0.0),
+    'hillbig_5': (o_hill(1.3, 0.32, 9, n=16), 'hill_moss', 0.0),
+    'hillsmall_1': (o_hill(1.5, 0.85, 31, n=20, skew=0.12), 'hill_ochre', 0.0),
+    'hillsmall_2': (o_hill(1.8, 0.62, 33, n=20, skew=-0.12), 'hill_moss', 0.0),
+    'hillsmall_3': (o_hill(1.4, 0.36, 35, n=18), 'hill_sage', 0.0),
+    'strut_a': (o_rect(-0.09, 0.09, 0, 0.55 / math.sin(math.radians(60))), 'strut', 0.0),
+    'strut_b': (o_rect(-0.09, 0.09, 0, 0.4 / math.sin(math.radians(60))), 'strut', 0.0),
+}
+
+# traveller card outlines, in the card plane (x forward, z up), relative to the part's joint, before TRAV_K scaling
+TRAV_T = 0.014
+TRAV_K = 1.36
+HIP_Z = 0.19 * TRAV_K
+SHOULDER_Z = 0.33 * TRAV_K
+
+
+def o_trav_body():
+    hc, hr = (0.005, 0.225), 0.062
+    pts = [(-0.07, -0.045), (0.07, -0.045), (0.055, 0.148), (0.03, 0.16)]
+    pts += [(hc[0] + hr * math.cos(math.radians(a)), hc[1] + hr * math.sin(math.radians(a))) for a in range(-65, 50, 19)]
+    pts += [(0.15, 0.268), (0.15, 0.287), (0.07, 0.287), (0.055, 0.365), (-0.055, 0.365), (-0.07, 0.287),
+            (-0.145, 0.287), (-0.145, 0.268)]
+    pts += [(hc[0] + hr * math.cos(math.radians(a)), hc[1] + hr * math.sin(math.radians(a))) for a in range(135, 215, 20)]
+    pts += [(-0.12, 0.205), (-0.185, 0.19), (-0.18, 0.15), (-0.11, 0.165), (-0.05, 0.15), (-0.055, 0.07),
+            (-0.14, 0.07), (-0.14, -0.03), (-0.07, -0.03)]
+    return pts
+
+
+def o_trav_leg():
+    return [(-0.034, 0.02), (0.034, 0.02), (0.03, -0.14), (0.09, -0.15), (0.095, -0.178), (-0.032, -0.178)]
+
+
+def o_trav_arm():
+    return [(-0.026, 0.02), (0.026, 0.02), (0.07, -0.1), (0.05, -0.135), (0.015, -0.125)]
+
+
+def o_trav_arm_stick():
+    return [(-0.026, 0.02), (0.015, -0.125), (0.05, -0.14), (0.062, -0.13), (0.062, -0.318), (0.08, -0.318),
+            (0.08, 0.0), (0.062, 0.0), (0.062, -0.085), (0.026, 0.02)]
+
+
 TRAV_SHAPES = {
-    'trav_body': (o_trav_body(), 'trav_body', 0.006),
-    'trav_leg': (o_trav_leg(), 'trav_leg', 0.005),
-    'trav_arm': (o_trav_arm(), 'trav_arm', 0.005),
-    'trav_stand': (o_trav_stand(), 'trav_stand', 0.006),
-    'trav_tab': (o_rect(-0.07, 0.07, 0, 0.075), 'strut', 0.0),
+    'trav_body': (o_trav_body(), 'trav_body', 0.0),
+    'trav_leg': (o_trav_leg(), 'trav_leg', 0.0),
+    'trav_arm': (o_trav_arm(), 'trav_arm', 0.0),
+    'trav_arm_stick': (o_trav_arm_stick(), 'trav_arm', 0.0),
+    'trav_stand': (o_rect(-0.12, 0.14, -0.08, 0.08), 'trav_stand', 0.0),
+    'trav_tab': (o_rect(-0.06, 0.06, 0, 0.07), 'trav_stand', 0.0),
 }
 
 
@@ -502,6 +503,7 @@ def _layer(flaps, tile_id, shifts):
             f.origin = Vector((f.pos[0], f.parent.top_y, f.pos[1] + shifts.get(f, 0.0)))
             mp = f.parent.m_flat
         f.m_flat = mp @ Matrix.Translation(f.origin) @ f.rot @ rx(f.fold)
+        f.m_rest = (f.parent.m_rest if f.parent is not None else Matrix.Identity(4)) @ Matrix.Translation(f.origin) @ f.rot
         sig = f.m_flat[2][1]
         if abs(abs(sig) - 1.0) > 1e-4:
             raise RuntimeError(f'{tile_id}/{f.name}: flap does not lie flat (normal z = {sig})')
@@ -556,25 +558,33 @@ def finalize(flaps, tile_id=''):
     return top
 
 
-def card_mesh(outline, uv_outline, ya, yb, uvmap, core_uv, rnd, fibre_scale=0.5):
-    """Extruded card in local XZ, slab from ya to yb along Y. Returns pos, nor, uv0, uv1, idx arrays."""
+def card_mesh(outline, uv_outline, ya, yb, uvmap, core_uv, rnd, up=(0.0, 0.0, 1.0), bend=0.6, back=1.18,
+              fibre_scale=0.5):
+    """Extruded card in local XZ, slab from ya to yb along Y.
+
+    Normals lean toward `up` so that no card face shades much darker than the page.
+    Returns pos, nor, uv0, uv1, idx, col arrays. The back face (+Y) gets a lighter vertex colour.
+    """
     n = len(outline)
     tris = tessellate_polygon([[Vector((x, z, 0.0)) for x, z in outline]])
-    pos, nor, uv0, uv1, idx = [], [], [], [], []
+    pos, nor, uv0, uv1, idx, col = [], [], [], [], [], []
     ox, oz = rnd.random(), rnd.random()
+    ux_, uy_, uz_ = (bend * v for v in up)
     for y, ny in ((ya, -1.0), (yb, 1.0)):
         base = len(pos)
+        c = 1.0 if ny < 0 else back
         for (x, z), (ux, uz) in zip(outline, uv_outline):
             pos.append((x, y, z))
-            nor.append((0.0, ny, 0.0))
+            nor.append((ux_, ny + uy_, uz_))
             uv0.append(uvmap(ux, uz))
             uv1.append((x * fibre_scale + ox, z * fibre_scale + oz))
-        for a, b, c in tris:
-            pa, pb, pc = outline[a], outline[b], outline[c]
+            col.append((c, c, c))
+        for a, b, c_ in tris:
+            pa, pb, pc = outline[a], outline[b], outline[c_]
             cr = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0])
             # In XZ, a counter-clockwise triangle has its normal along -Y.
             flip = (cr > 0) != (ny < 0)
-            idx += [base + a, base + c, base + b] if flip else [base + a, base + b, base + c]
+            idx += [base + a, base + c_, base + b] if flip else [base + a, base + b, base + c_]
     s = 0.0
     cu0, cv0, cu1, cv1 = core_uv
     for i in range(n):
@@ -588,10 +598,10 @@ def card_mesh(outline, uv_outline, ya, yb, uvmap, core_uv, rnd, fibre_scale=0.5)
         f1 = min(1.0, f0 + L / 0.4)
         for (x, z, y, fu, fv) in ((x0, z0, ya, f0, 0.0), (x1, z1, ya, f1, 0.0), (x1, z1, yb, f1, 1.0), (x0, z0, yb, f0, 1.0)):
             pos.append((x, y, z))
-            nor.append((nx, 0.0, nz))
+            nor.append((nx + ux_, uy_, nz + uz_))
             uv0.append((cu0 + (cu1 - cu0) * fu, cv0 + (cv1 - cv0) * fv))
             uv1.append(((s + (L if fu == f1 else 0.0)) * fibre_scale, y * fibre_scale + fv * 0.01))
-        # Outward winding: the normal must equal cross(p1 - p0, p3 - p0).
+            col.append((1.0, 1.0, 1.0))
         e1 = (x1 - x0, 0.0, z1 - z0)
         e2 = (0.0, yb - ya, 0.0)
         cx_ = e1[1] * e2[2] - e1[2] * e2[1]
@@ -602,24 +612,21 @@ def card_mesh(outline, uv_outline, ya, yb, uvmap, core_uv, rnd, fibre_scale=0.5)
             idx += [base, base + 2, base + 1, base, base + 3, base + 2]
         s += L
     return (np.array(pos, np.float32), np.array(nor, np.float32), np.array(uv0, np.float32),
-            np.array(uv1, np.float32), np.array(idx, np.uint32))
+            np.array(uv1, np.float32), np.array(idx, np.uint32), np.array(col, np.float32))
 
 
 def transform_mesh(mesh, m):
-    pos, nor, uv0, uv1, idx = mesh
+    pos, nor, uv0, uv1, idx, col = mesh
     m3 = np.array(m.to_3x3(), np.float32)
     t = np.array(m.translation, np.float32)
-    return (pos @ m3.T + t, nor @ m3.T, uv0, uv1, idx)
+    return (pos @ m3.T + t, nor @ m3.T, uv0, uv1, idx, col)
 
 
 def merge_meshes(meshes):
-    pos, nor, uv0, uv1, idx = [], [], [], [], []
+    out = [[] for _ in range(6)]
     off = 0
-    for p, n, a, b, i in meshes:
-        pos.append(p)
-        nor.append(n)
-        uv0.append(a)
-        uv1.append(b)
-        idx.append(i + off)
-        off += len(p)
-    return (np.concatenate(pos), np.concatenate(nor), np.concatenate(uv0), np.concatenate(uv1), np.concatenate(idx))
+    for mesh in meshes:
+        for k in range(6):
+            out[k].append(mesh[k] + off if k == 4 else mesh[k])
+        off += len(mesh[0])
+    return tuple(np.concatenate(o) for o in out)

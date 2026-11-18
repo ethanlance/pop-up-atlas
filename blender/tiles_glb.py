@@ -43,7 +43,7 @@ class Glb:
         return len(self.accessors) - 1
 
     def add_mesh(self, name, mesh, material=0):
-        pos, nor, uv0, uv1, idx = mesh
+        pos, nor, uv0, uv1, idx, col = mesh
         pos = np.ascontiguousarray(yup(pos), np.float32)
         nor = yup(nor)
         nor = np.ascontiguousarray(nor / np.maximum(np.linalg.norm(nor, axis=1, keepdims=True), 1e-9), np.float32)

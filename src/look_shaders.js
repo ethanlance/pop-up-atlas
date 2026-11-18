@@ -226,7 +226,7 @@ void main() {
   c += texture2D( tBloom, vUv ).rgb * bloom.rgb * bloom.a;
   // Lamp falloff: the key is a near lamp, so the page is brightest toward it and falls away behind the focus.
   vec3 world = ( camWorld * vec4( ( vUv * 2.0 - 1.0 ) * projInfo.xy * z, - z, 1.0 ) ).xyz - lantern.xyz;
-  float fall = clamp( lantern.w * lantern.w / dot( world, world ), 0.3, 1.6 );
+  float fall = clamp( lantern.w * lantern.w / dot( world, world ), 0.28, 1.35 );
   c = toDisplay( agx( c * exposure * mix( 1.0, fall, pool ) ) );
   vec2 q = ( vUv - 0.5 ) * vec2( 2.0, 2.0 * aspect );
   c *= 1.0 - vignette * pow( min( length( q ), 1.2 ), 2.2 );
