@@ -29,6 +29,7 @@ export function createInput(dom, camera) {
     target: null, // Vector3 on the page while a click-walk is active
     markerAge: Infinity, // seconds since the pencil mark was placed
     held: false, // pointer is down, the target follows it
+    onPath: null, // (x, z) => bool, installed by the traveller: is this spot on a printed path
     walkable: null, // (x, z) => bool, installed by the traveller
     auto: false,
     setAuto(v) { api.auto = !!v; auto.fresh = true; },
@@ -98,12 +99,15 @@ export function createInput(dom, camera) {
   const dist = new Float32Array(SIZE * SIZE), parent = new Int32Array(SIZE * SIZE), crowd = new Int8Array(SIZE * SIZE);
   const heap = [];
   const cache = new Map(); // walkability on a 0.25 grid: grid nodes and the midpoints between them
+  const pathCache = new Map(); // printed-path flag per grid node
+  const CRUISE_TURN = (35 * Math.PI) / 180; // heading change rate with nothing in the way, rad/s
+  const AVOID_TURN = 3.5; // heading change rate when an obstacle is right ahead, rad/s
   const NBX = [1, -1, 0, 0, 1, 1, -1, -1], NBZ = [0, 0, 1, -1, 1, -1, 1, -1];
   const QSIZE = SIZE * 2 + 4, local = new Int8Array(QSIZE * QSIZE);
   const auto = {
     t: 0, angle: 0, base: 0, path: [], index: 0, planT: 1,
     explore: 0, exploreLeft: 0, exploreLen: 0, flips: 0, best: 0, bestT: 0, bx: 0, bz: 0,
-    probeT: 0, probeX: 0, probeZ: 0, panic: 0, fresh: true, lastX: 0, lastZ: 0,
+    probeT: 0, probeX: 0, probeZ: 0, panic: 0, omega: 0, fresh: true, lastX: 0, lastZ: 0,
   };
 
   function free(qx, qz) { // quarter-unit grid indices
@@ -117,6 +121,19 @@ export function createInput(dom, camera) {
       cache.set(key, v);
     }
     return v;
+  }
+
+  function onPath(qx, qz) {
+    const f = api.onPath;
+    if (!f) return false;
+    const key = ((qx & 0xffff) * 0x10000) + (qz & 0xffff);
+    let v = pathCache.get(key);
+    if (v === undefined) {
+      if (pathCache.size > 60000) pathCache.clear();
+      v = f(qx * 0.25, qz * 0.25);
+      if (v !== null) pathCache.set(key, v); // null: the tile table is not loaded yet, ask again later
+    }
+    return v === true;
   }
 
   function sight(ax, az, bx, bz) {
@@ -188,7 +205,8 @@ export function createInput(dom, camera) {
         if (crowd[next] < 0) {
           crowd[next] = (ok(jx + 1, jz) ? 0 : 1) + (ok(jx - 1, jz) ? 0 : 1) + (ok(jx, jz + 1) ? 0 : 1) + (ok(jx, jz - 1) ? 0 : 1);
         }
-        const nd = d0 + len * STEP * (1 + 0.8 * crowd[next]); // prefer open ground to squeezing past things
+        // Prefer open ground to squeezing past things, and printed paths (bridges are paths) to open ground.
+        const nd = d0 + len * STEP * (1 + 0.8 * crowd[next]) * (onPath((ox + jx) * 2, (oz + jz) * 2) ? 0.45 : 1);
         if (nd < dist[next]) {
           dist[next] = nd;
           parent[next] = node;
@@ -217,7 +235,9 @@ export function createInput(dom, camera) {
     if (a.fresh || Math.hypot(p.x - a.lastX, p.z - a.lastZ) > 2) {
       a.fresh = false; a.path = []; a.index = 0; a.planT = 1; a.explore = 0; a.best = 0; a.bestT = a.t;
       a.bx = p.x; a.bz = p.z; a.probeT = 0; a.probeX = p.x; a.probeZ = p.z; a.panic = 0;
+      a.omega = 0;
       cache.clear();
+      pathCache.clear();
     }
     a.lastX = p.x; a.lastZ = p.z;
     const fx = Math.sin(a.base), fz = -Math.cos(a.base); // angle 0 = -Z (away from the camera), positive towards +X
@@ -241,8 +261,8 @@ export function createInput(dom, camera) {
     a.planT += dt;
     if (a.planT >= 0.5 || a.index >= a.path.length - 2) {
       a.planT = 0;
-      // Meander: three incommensurate sines, mostly forward.
-      const m = 0.7 * Math.sin(a.t * 0.23 + 0.4) + 0.4 * Math.sin(a.t * 0.61 + 1.9) + 0.15 * Math.sin(a.t * 1.37);
+      // Meander: two slow incommensurate sines, mostly forward; the goal swings at 13 degrees per second at most.
+      const m = 0.6 * Math.sin(a.t * 0.17 + 0.4) + 0.3 * Math.sin(a.t * 0.41 + 1.9);
       const want = a.base + (a.explore ? a.explore * 1.25 + 0.3 * m : m);
       const t0 = performance.now();
       plan(p, p.x + Math.sin(want) * 9, p.z - Math.cos(want) * 9);
@@ -252,7 +272,7 @@ export function createInput(dom, camera) {
     // Follow the path: aim at the farthest of the next few points that is in plain sight.
     while (a.index < a.path.length && Math.hypot(a.path[a.index][0] - p.x, a.path[a.index][1] - p.z) < 0.3) a.index++;
     let aim = null;
-    for (let j = Math.min(a.path.length - 1, a.index + 6); j >= a.index; j--) {
+    for (let j = Math.min(a.path.length - 1, a.index + 12); j >= a.index; j--) {
       if (j === a.index || sight(p.x, p.z, a.path[j][0], a.path[j][1])) { aim = a.path[j]; break; }
     }
 
@@ -269,8 +289,19 @@ export function createInput(dom, camera) {
     else if (aim) {
       let diff = Math.atan2(aim[0] - p.x, -(aim[1] - p.z)) - a.angle;
       diff = Math.atan2(Math.sin(diff), Math.cos(diff));
-      const maxTurn = (Math.abs(diff) > 1 ? 12 : 5) * dt; // smooth curves, but quick about-turns
-      a.angle += Math.max(-maxTurn, Math.min(maxTurn, diff));
+      // Turn slowly while the way ahead is clear, faster the nearer an obstacle is, so the camera pans gently.
+      const sx = Math.sin(a.angle), sz = -Math.cos(a.angle), w = api.walkable;
+      let clear = 2.2;
+      for (let d = 0.2; w && d <= 2.2; d += 0.2) {
+        const x = p.x + sx * d, z = p.z + sz * d;
+        if (!w(x, z) || !w(x - sz * 0.14, z + sx * 0.14) || !w(x + sz * 0.14, z - sx * 0.14)) { clear = d - 0.2; break; }
+      }
+      const urgency = Math.min(1, Math.max(0, (2.2 - clear) / 1.4));
+      let limit = CRUISE_TURN + (AVOID_TURN - CRUISE_TURN) * urgency;
+      if (Math.abs(diff) > 1.3) limit = Math.max(limit, 1.6); // the route doubles back
+      const wantOmega = Math.max(-limit, Math.min(limit, diff * 3));
+      a.omega += Math.max(-10 * dt, Math.min(10 * dt, wantOmega - a.omega));
+      a.angle += a.omega * dt;
     }
     dir.set(Math.sin(a.angle), -Math.cos(a.angle));
   }

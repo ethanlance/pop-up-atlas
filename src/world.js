@@ -11,24 +11,28 @@
 import * as THREE from 'three';
 import * as Fold from './fold.js';
 
-const HALF_X = 6; // window half size in cells: 13 x 11 cells = 26 x 22 units (the camera sees about 9.5 x 6)
-const HALF_Z = 5;
+const HALF_X = 5; // window half size in cells: 11 x 9 cells = 22 x 18 units (the camera sees about 7.5 x 4.7, plus
+const HALF_Z = 4; // look-ahead and lag; this leaves one cell of margin at 16:10 and 16:9)
 const WIN_W = HALF_X * 2 + 1;
 const WIN_H = HALF_Z * 2 + 1;
 
-const RISE_AHEAD = 2.1; // cells, along the heading when walking across the page: the rise front is inside the frame
-const RISE_AHEAD_UP = 1.7; // walking up the page (-Z): nearer, so the rise is close to the sharp band
-const RISE_AHEAD_DOWN = 1.4; // walking down the page (+Z): the frame ends about 1.8 cells ahead of the traveller
-const RISE_SIDE = 1.5; // cells, sideways
-const RISE_BEHIND = 1.0; // cells, behind (only matters at the start and in turns)
-const HYSTERESIS = 0.75; // fold-down radii are this much larger (1.75 cells behind)
-const HEADING_TAU = 0.45; // s, low-pass on the heading so the region swings instead of jumping
-const REACH_TIME = 0.8; // s for the region to grow from the traveller to full size (start / teleport ripple)
+// Rise / fold region = the camera's footprint on the page (read from the camera of the last rendered frame).
+// Edges in order: bottom (nearest the camera), right, top, left. Distances in world units, positive = inside the frame.
+// Everything on screen is up, except tiles that are just coming in over the leading edge: those rise there.
+const LEAD_INSET = [-1.3, -0.3, 0.1, -0.3]; // where a tile centre starts to rise at a leading edge
+const LEAD_INSET_BAND = -2.9; // side edges, tiles level with the traveller: they rise off screen and enter the sharp band up
+const BAND_DEPTH = 1.9; // units up or down the page from the traveller that count as level with him (band + half a tile)
+const READY_MARGIN = [1.7, 0.7, 0.7, 0.7]; // tiles this far outside a non-leading edge are already up
+const FOLD_MARGIN = [2.8, 3.6, 1.8, 3.6]; // tiles fold down only this far outside the frame (bottom: tall cards lean in)
+const DEFAULT_RIG = { pitch: 55, distance: 7.5, fov: 28, aspect: 1.6, lookAhead: 1.1 }; // used until a frame has rendered
+const CAM_OFF_TARGET = 4; // units between footprint centre and traveller beyond which the camera is still travelling
+const INSTANT_FRAMES = 3; // after a start or teleport tiles snap to their pose instead of animating
+const HEADING_TAU = 0.45; // s, low-pass on the heading so the leading edge changes smoothly
 const TELEPORT_DIST = 3; // units in one frame
 
-const RIPPLE_PER_CELL = 0.075; // s of extra rise delay per cell of distance from the traveller
-const TILE_JITTER = 0.03; // s, per-tile random delay so a row does not pop in unison
-const INTRA_RISE = 0.6; // s spanned by the `delay` extra inside one tile
+const RIPPLE_PER_CELL = 0.075; // s of extra rise delay per cell sideways from the traveller's line of travel
+const TILE_JITTER = 0.05; // s, per-tile random delay so a row does not pop in unison
+const INTRA_RISE = 0.22; // s spanned by the `delay` extra inside one tile
 const INTRA_FALL = 0.16;
 const NEST_LAG = 0.07; // s a nested flap starts after its parent
 const RISE_RATE = 160; // flap starts per second (token bucket): keeps audio under 28 starts per 100 ms
@@ -41,9 +45,12 @@ const LAYER_STEP = 0.004; // vertical spacing between stacked flat flaps (no z-f
 const WALK_MARGIN = 0.12;
 const GUTTER_EVERY = 6; // cells between book gutters (valley creases along z, on a cell edge)
 const CAM_DIR = [0, -Math.sin(55 * Math.PI / 180), -Math.cos(55 * Math.PI / 180)]; // fixed camera view direction
+const SHADOW_FLAT = 0.91; // fold fraction above which a card casts no shadow (within about 8 degrees of flat)
+const SHADOW_FULL = 0.72; // ... and below which it casts its full shadow
 const PAGE_SIZE = 480;
 const MAX_SUBSTEPS = 16;
 
+const HN = 41; // height-field nodes per tile side (walkable decks)
 const MAX_FOLDS = 3; // nested fold levels the shader animates
 
 const PEND_NONE = 0;
@@ -209,6 +216,35 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         p.area = total;
         for (let r = 0; r < 4; r++) proto.facing[r] += p.facing[r];
       }
+      // Walkable deck (bridge): height field of the up-facing triangles of pieces named *deck*, in the popped pose.
+      const deck = pieces.filter((q) => q.hasMesh && /deck/.test(q.name));
+      if (deck.length) {
+        const grid = new Float32Array(HN * HN);
+        const u = proto.up;
+        for (const q of deck) {
+          const idx = q.geometry.index;
+          for (let k = 0; k < idx.count; k += 3) {
+            const a = (q.vOff + idx.getX(k)) * 6, b = (q.vOff + idx.getX(k + 1)) * 6, c = (q.vOff + idx.getX(k + 2)) * 6;
+            if ((u[a + 4] + u[b + 4] + u[c + 4]) / 3 < 0.25) continue; // not a top face
+            const x0 = u[a], z0 = u[a + 2], x1 = u[b], z1 = u[b + 2], x2 = u[c], z2 = u[c + 2];
+            const det = (z1 - z2) * (x0 - x2) + (x2 - x1) * (z0 - z2);
+            if (Math.abs(det) < 1e-9) continue;
+            const i0 = Math.max(0, Math.floor((Math.min(x0, x1, x2) + 1) / 2 * (HN - 1))), i1 = Math.min(HN - 1, Math.ceil((Math.max(x0, x1, x2) + 1) / 2 * (HN - 1)));
+            const j0 = Math.max(0, Math.floor((Math.min(z0, z1, z2) + 1) / 2 * (HN - 1))), j1 = Math.min(HN - 1, Math.ceil((Math.max(z0, z1, z2) + 1) / 2 * (HN - 1)));
+            for (let j = j0; j <= j1; j++) {
+              for (let i = i0; i <= i1; i++) {
+                const x = -1 + 2 * i / (HN - 1), z = -1 + 2 * j / (HN - 1);
+                const w0 = ((z1 - z2) * (x - x2) + (x2 - x1) * (z - z2)) / det, w1 = ((z2 - z0) * (x - x2) + (x0 - x2) * (z - z2)) / det, w2 = 1 - w0 - w1;
+                if (w0 < -0.02 || w1 < -0.02 || w2 < -0.02) continue;
+                const y = w0 * u[a + 1] + w1 * u[b + 1] + w2 * u[c + 1];
+                if (y > grid[j * HN + i]) grid[j * HN + i] = y;
+              }
+            }
+          }
+        }
+        proto.hGrid = grid;
+        proto.deck = deck.filter((q) => q.fa !== 0).map((q) => pieces.indexOf(q));
+      }
       protos.set(root.name.slice(5), proto);
       if (vCount > VCAP) VCAP = vCount;
       if (iCount > ICAP) ICAP = iCount;
@@ -323,6 +359,11 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       popRot(p, n, hingeC, axisC, xc);
       float f = clamp(max(xa, max(xb, xc)), 0.0, 1.0);
       p.y += hingeA.w * f * f;
+      #ifdef POP_SHADOW
+        // Shadow pass only: a flat or nearly flat card sinks under the page, so it casts no streak; the shadow
+        // grows from nothing as the card lifts.
+        if (fold.y > -0.5) p.y -= 0.3 * smoothstep(${SHADOW_FULL.toFixed(2)}, ${SHADOW_FLAT.toFixed(2)}, f);
+      #endif
     }
   `;
   const GUTTER_PARS = /* glsl */`
@@ -360,6 +401,13 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   if (ready) {
     tilesMesh = new THREE.Mesh(tilesGeo, patchMaterial(srcMaterial.clone()));
     tilesMesh.customDepthMaterial = patchMaterial(new THREE.MeshDepthMaterial()); // shadow pass folds the same way
+    tilesMesh.customDepthMaterial.defines = { POP_SHADOW: '' };
+    tilesMesh.onBeforeRender = (renderer, sc, camera) => { // remember the real camera for the next update
+      if (!camera.isPerspectiveCamera) return;
+      camWorld.copy(camera.matrixWorld);
+      camProjInv.copy(camera.projectionMatrixInverse);
+      camKnown = true;
+    };
     tilesMesh.name = 'tiles';
     tilesMesh.frustumCulled = false; // the window always surrounds the camera target
     tilesMesh.castShadow = true;
@@ -477,9 +525,62 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   let winCx = 0x7fffffff, winCz = 0x7fffffff;
   let lastFx = 0, lastFz = 0;
   let hx = 0, hz = -1; // smoothed heading (not normalised)
-  let reach = 0;
   let nudgeOn = true;
   let riseTokens = BUCKET, fallTokens = BUCKET;
+  let instantFrames = 0;
+  let camKnown = false;
+  const camWorld = new THREE.Matrix4(), camProjInv = new THREE.Matrix4();
+  const rigCam = new THREE.PerspectiveCamera(DEFAULT_RIG.fov, DEFAULT_RIG.aspect, 0.5, 200);
+  const fpx = new Float32Array(4), fpz = new Float32Array(4); // footprint corners: bottom-left, bottom-right, top-right, top-left
+  const enx = new Float32Array(4), enz = new Float32Array(4), eInset = new Float32Array(4), eLead = new Float32Array(4); // edge outward normals, rise insets
+  const cv3 = new THREE.Vector3();
+  const NDC = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+
+  // Camera footprint on the page (y = 0). Returns false when a corner ray misses the page.
+  function footprint(world, projInv) {
+    const e = world.elements, ox = e[12], oy = e[13], oz = e[14];
+    for (let k = 0; k < 4; k++) {
+      cv3.set(NDC[k][0], NDC[k][1], 0.5).applyMatrix4(projInv).applyMatrix4(world);
+      const dy = cv3.y - oy;
+      if (dy > -1e-4) return false;
+      const t = -oy / dy;
+      fpx[k] = ox + (cv3.x - ox) * t;
+      fpz[k] = oz + (cv3.z - oz) * t;
+    }
+    const mx = (fpx[0] + fpx[1] + fpx[2] + fpx[3]) / 4, mz = (fpz[0] + fpz[1] + fpz[2] + fpz[3]) / 4;
+    for (let k = 0; k < 4; k++) {
+      const n = (k + 1) & 3;
+      let nx = fpz[n] - fpz[k], nz = -(fpx[n] - fpx[k]);
+      const l = Math.hypot(nx, nz) || 1;
+      nx /= l; nz /= l;
+      if ((mx - fpx[k]) * nx + (mz - fpz[k]) * nz > 0) { nx = -nx; nz = -nz; }
+      enx[k] = nx; enz[k] = nz;
+    }
+    return true;
+  }
+  function defaultFootprint(fx, fz, ux, uz) {
+    const p = DEFAULT_RIG.pitch * Math.PI / 180, tx = fx + ux * DEFAULT_RIG.lookAhead, tz = fz + uz * DEFAULT_RIG.lookAhead;
+    rigCam.position.set(tx, Math.sin(p) * DEFAULT_RIG.distance, tz + Math.cos(p) * DEFAULT_RIG.distance);
+    rigCam.lookAt(tx, 0, tz);
+    rigCam.updateMatrixWorld();
+    footprint(rigCam.matrixWorld, rigCam.projectionMatrixInverse);
+  }
+
+  // Snap every flap of a tile to up or flat without animation (start, teleport).
+  function setTileInstant(slot, up) {
+    const proto = slotProto[slot];
+    if (slotUp[slot] !== (up ? 1 : 0)) { slotUp[slot] = up ? 1 : 0; tilesUp += up ? 1 : -1; }
+    if (!proto) return;
+    const off = slot * STRIDE;
+    for (let i = 0; i < proto.pieces.length; i++) {
+      const m = pool.mode[off + i];
+      if (m === Fold.RISING || m === Fold.FALLING) flapsMoving--;
+      Fold.initFlap(pool, off + i, proto.pieces[i].mass, up);
+      pend[off + i] = PEND_NONE;
+    }
+    if (slotBlock[slot] >= 0) { freeBlocks[nFree++] = slotBlock[slot]; slotBlock[slot] = -1; }
+    tileState[slot] = up ? 0 : 1;
+  }
 
   // Debug counters (tools/fold_test.mjs).
   const dbg = { audioCalls: 0, audioRise: 0, audioLand: 0, maxPer100ms: 0, winStart: 0, winCount: 0, minX: 1, maxX: 0, nan: 0,
@@ -583,7 +684,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     const off = slot * STRIDE;
     const pieces = proto.pieces;
     const jitter = hash2(slotCx[slot], slotCz[slot]);
-    const base = up ? Math.max(0, dist - 1) * RIPPLE_PER_CELL + jitter * TILE_JITTER : jitter * 0.05;
+    const base = up ? jitter * TILE_JITTER + Math.min(0.15, dist * RIPPLE_PER_CELL) : jitter * 0.05;
     let any = false;
     for (let i = 0; i < pieces.length; i++) {
       const p = pieces[i];
@@ -657,24 +758,26 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         timer[id] -= elapsed;
         const rising = pend[id] === PEND_RISE;
         const parentWaits = rising && p.parent >= 0 && pend[off + p.parent] === PEND_RISE;
-        if (timer[id] <= 0 && !parentWaits && (rising ? riseTokens : fallTokens) >= 1) {
-          const before = pool.mode[id];
-          if (rising) {
-            if (before === Fold.FLAT || before === Fold.FALLING) riseTokens--;
+        const before = pool.mode[id];
+        // A flap in motion always finishes first: no reversal mid-swing.
+        const inMotion = before === Fold.RISING || before === Fold.FALLING;
+        if (timer[id] <= 0 && !parentWaits && !inMotion && (rising ? riseTokens : fallTokens) >= 1) {
+          if (rising && before === Fold.FLAT) {
+            riseTokens--;
             Fold.startRise(pool, id);
-            if (before === Fold.FLAT || before === Fold.FALLING) {
-              if (before === Fold.FLAT) { flapsMoving++; firstRise = true; }
-              emitFlap(slot, p, 1);
-              if (trace && trace.id < 0 && before === Fold.FLAT && p.mass >= trace.minMass && p.mass <= trace.maxMass) {
-                trace.id = id; trace.mass = p.mass; trace.name = p.name; trace.fa = p.fa;
-                trace.t0 = simTime - elapsed; // this frame's substeps are part of the rise
-                trace.samples.push({ t: 0, x: pool.x[id] });
-              }
+            flapsMoving++;
+            firstRise = true;
+            emitFlap(slot, p, 1);
+            if (trace && trace.id < 0 && p.mass >= trace.minMass && p.mass <= trace.maxMass &&
+                Math.hypot(slotCx[slot] * CELL - lastFx, slotCz[slot] * CELL - lastFz) <= trace.maxDist) {
+              trace.id = id; trace.mass = p.mass; trace.name = p.name; trace.fa = p.fa;
+              trace.t0 = simTime - elapsed; // this frame's substeps are part of the rise
+              trace.samples.push({ t: 0, x: pool.x[id] });
             }
-          } else {
+          } else if (!rising && before === Fold.UP) {
+            fallTokens--;
             Fold.startFall(pool, id);
-            if (before === Fold.UP || before === Fold.RISING) fallTokens--;
-            if (before === Fold.UP) flapsMoving++;
+            flapsMoving++;
           }
           pend[id] = PEND_NONE;
         } else busy = true;
@@ -732,8 +835,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       hx += (heading.x / hl - hx) * k;
       hz += (heading.z / hl - hz) * k;
     }
-    if (jumped) reach = 0.12;
-    reach = Math.min(1, reach + dt / REACH_TIME);
+    if (jumped) instantFrames = INSTANT_FRAMES;
     started = true;
 
     // Window of tiles around the focus.
@@ -752,24 +854,43 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       page.position.z = fcz * CELL;
     }
 
-    // Rise / fold decisions: an egg-shaped region, longer ahead, with hysteresis.
+    // Rise / fold decisions from the camera footprint. A tile is wanted up when its centre is inside every edge by
+    // that edge's inset: a leading edge (facing the heading) has a small inset, so tiles rise as they come into
+    // frame; the other edges have a negative inset, so tiles beside and behind the frame are up before they show.
     const hlen = Math.hypot(hx, hz);
     const ux = hlen > 1e-4 ? hx / hlen : 0, uz = hlen > 1e-4 ? hz / hlen : -1;
-    const aheadFull = uz < 0 ? RISE_AHEAD + (RISE_AHEAD_UP - RISE_AHEAD) * -uz : RISE_AHEAD + (RISE_AHEAD_DOWN - RISE_AHEAD) * uz;
-    const ahead = RISE_BEHIND + (aheadFull - RISE_BEHIND) * Math.min(1, hlen);
-    const riseA = ahead * reach, riseS = RISE_SIDE * reach, riseB = RISE_BEHIND * reach;
-    const foldA = riseA + HYSTERESIS, foldS = riseS + HYSTERESIS, foldB = riseB + HYSTERESIS;
-    for (let slot = 0; slot < NSLOT; slot++) {
-      const dx = slotCx[slot] - fx / CELL, dz = slotCz[slot] - fz / CELL;
-      const a = dx * ux + dz * uz, s = dz * ux - dx * uz;
-      if (slotUp[slot]) {
-        const ra = a > 0 ? foldA : foldB;
-        if ((a * a) / (ra * ra) + (s * s) / (foldS * foldS) > 1) trigger(slot, false, 0);
-      } else {
-        const ra = a > 0 ? riseA : riseB;
-        if ((a * a) / (ra * ra) + (s * s) / (riseS * riseS) <= 1) trigger(slot, true, Math.sqrt(dx * dx + dz * dz));
-      }
+    // The real camera counts only while it is on the traveller. At the start and while the rig travels after a
+    // teleport, the contract rig stands in and tiles snap to their pose.
+    let camOk = instantFrames === 0 && camKnown && footprint(camWorld, camProjInv);
+    if (camOk && Math.hypot((fpx[0] + fpx[1] + fpx[2] + fpx[3]) / 4 - fx, (fpz[0] + fpz[1] + fpz[2] + fpz[3]) / 4 - fz) > CAM_OFF_TARGET) camOk = false;
+    if (!camOk) {
+      defaultFootprint(fx, fz, ux, uz);
+      if (instantFrames < 1) instantFrames = 1;
     }
+    for (let e = 0; e < 4; e++) {
+      const lead = Math.min(1, Math.max(0, (enx[e] * ux + enz[e] * uz - 0.2) / 0.3)) * Math.min(1, hlen * 2);
+      eLead[e] = lead;
+      eInset[e] = -READY_MARGIN[e] + (LEAD_INSET[e] + READY_MARGIN[e]) * lead;
+    }
+    const bandSide1 = -READY_MARGIN[1] + (LEAD_INSET_BAND + READY_MARGIN[1]) * eLead[1];
+    const bandSide3 = -READY_MARGIN[3] + (LEAD_INSET_BAND + READY_MARGIN[3]) * eLead[3];
+    for (let slot = 0; slot < NSLOT; slot++) {
+      const px = slotCx[slot] * CELL, pz = slotCz[slot] * CELL;
+      let wantUp = true, wantDown = false;
+      const level = Math.abs((px - fx) * enx[2] + (pz - fz) * enz[2]) < BAND_DEPTH; // level with the traveller on screen
+      for (let e = 0; e < 4; e++) {
+        const inside = -((px - fpx[e]) * enx[e] + (pz - fpz[e]) * enz[e]);
+        if (inside < (level && e === 1 ? bandSide1 : level && e === 3 ? bandSide3 : eInset[e])) wantUp = false;
+        if (inside < -FOLD_MARGIN[e]) wantDown = true;
+      }
+      if (instantFrames > 0) {
+        if (wantUp && !slotUp[slot]) setTileInstant(slot, true);
+        else if (wantDown && slotUp[slot]) setTileInstant(slot, false);
+      } else if (slotUp[slot]) {
+        if (wantDown) trigger(slot, false, 0);
+      } else if (wantUp) trigger(slot, true, Math.abs((px - fx) * uz - (pz - fz) * ux) / CELL);
+    }
+    if (instantFrames > 0) instantFrames--;
 
     // Fixed-substep springs.
     acc += dt;
@@ -822,12 +943,37 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     return true;
   }
 
+  /**
+   * Height of the walkable surface at world (x, z), in world units. 0 on the page. Over a bridge it follows the popped
+   * deck (arch profile from the deck flaps of the glb) and scales to 0 as the deck folds flat.
+   */
+  function heightAt(x, z) {
+    const cx = Math.round(x / CELL), cz = Math.round(z / CELL);
+    const slot = mod(cx, WIN_W) + mod(cz, WIN_H) * WIN_W;
+    if (slotCx[slot] !== cx || slotCz[slot] !== cz) return 0;
+    const proto = slotProto[slot];
+    if (!proto || !proto.hGrid) return 0;
+    let pop = 1;
+    for (let k = 0; k < proto.deck.length; k++) {
+      const v = 1 - pool.x[slot * STRIDE + proto.deck[k]];
+      if (v < pop) pop = v;
+    }
+    if (pop <= 0) return 0;
+    if (pop > 1) pop = 1;
+    let lx = x - cx * CELL, lz = z - cz * CELL;
+    for (let r = (4 - slotRot[slot]) & 3; r > 0; r--) { const t = lz; lz = -lx; lx = t; } // world -> tile-local
+    const gx = Math.min(HN - 1.001, Math.max(0, (lx + 1) / 2 * (HN - 1))), gz = Math.min(HN - 1.001, Math.max(0, (lz + 1) / 2 * (HN - 1)));
+    const i = Math.floor(gx), j = Math.floor(gz), fx = gx - i, fz = gz - j, g = proto.hGrid;
+    const h = (g[j * HN + i] * (1 - fx) + g[j * HN + i + 1] * fx) * (1 - fz) + (g[(j + 1) * HN + i] * (1 - fx) + g[(j + 1) * HN + i + 1] * fx) * fz;
+    return h * pop * pop * (3 - 2 * pop);
+  }
+
   function stats() { return { tilesUp, flapsMoving }; }
 
   // ------------------------------------------------------------------------------------------------ debug (tests)
   /** Arm a recorder: the next flap that starts rising from flat with mass in [minMass, maxMass] is sampled every frame. */
-  function debugFlapTrace({ minMass = 0, maxMass = 9, duration = 2.2 } = {}) {
-    trace = { id: -1, t0: 0, minMass, maxMass, duration, samples: [], done: false, mass: 0, name: '', fa: 0 };
+  function debugFlapTrace({ minMass = 0, maxMass = 9, duration = 2.2, maxDist = 1e9 } = {}) {
+    trace = { id: -1, t0: 0, minMass, maxMass, duration, maxDist, samples: [], done: false, mass: 0, name: '', fa: 0 };
   }
   function debugTraceResult() {
     return trace ? { done: trace.done, started: trace.id >= 0, mass: trace.mass, name: trace.name, foldAngle: trace.fa, samples: trace.samples } : null;
@@ -852,7 +998,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     }
     return { nan, vbNan, belowFlat: below, minX: Math.min(mnx, dbg.minX), maxX: Math.max(mxx, dbg.maxX), up, flat, moving,
       activeTiles: nActive, tilesUp, flapsMoving, audioCalls: dbg.audioCalls, audioRise: dbg.audioRise, audioLand: dbg.audioLand,
-      maxAudioPer100ms: dbg.maxPer100ms, tileUps: dbg.tileUps, tileDowns: dbg.tileDowns, flickers: dbg.flickers, simTime, reach, window: [WIN_W, WIN_H], geometries, stride: STRIDE,
+      maxAudioPer100ms: dbg.maxPer100ms, tileUps: dbg.tileUps, tileDowns: dbg.tileDowns, flickers: dbg.flickers, simTime, window: [WIN_W, WIN_H], geometries, stride: STRIDE,
       vertsPerSlot: VCAP, indices: tilesGeo.drawRange.count, liveBlocks: ACTIVE_MAX - nFree, liveBlocksMax: dbg.blocksMax,
       liveBlocksCap: ACTIVE_MAX, bufferMB: (vbData.byteLength + ibData.byteLength) / 1048576,
       pageColor: '#' + pageColor.getHexString(), fibreScale };
@@ -922,6 +1068,45 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     }
     return { inFrame, inBand, rising, falling };
   }
+  /**
+   * Rest-pose audit: flaps on screen inside the sharp band (|ndc.y - traveller| <= band). `notUp` = raised less than
+   * 85 degrees, `halfOpen` = between 10 and 70 degrees, `core` = the same counts for the middle 70 % of the width.
+   */
+  function debugBand(camera, focus, band = 0.35, minSize = 0.3) {
+    dv.copy(focus).project(camera);
+    const fy = dv.y;
+    const out = { total: 0, notUp: 0, halfOpen: 0, coreTotal: 0, coreNotUp: 0, screenTotal: 0, screenNotUp: 0 };
+    for (let slot = 0; slot < NSLOT; slot++) {
+      const proto = slotProto[slot];
+      if (!proto) continue;
+      for (let i = 0; i < proto.pieces.length; i++) {
+        const p = proto.pieces[i];
+        if (p.fa === 0 || !p.hasMesh || p.size < minSize) continue;
+        let px = p.px, pz = p.pz;
+        for (let r = 0; r < slotRot[slot]; r++) { const nx = -pz; pz = px; px = nx; }
+        dv.set(slotCx[slot] * CELL + px, 0.1, slotCz[slot] * CELL + pz).project(camera);
+        if (Math.abs(dv.x) > 0.98 || Math.abs(dv.y) > 0.98) continue;
+        let x = pool.x[slot * STRIDE + i]; // a piece is as flat as its flattest folding ancestor
+        for (let q = p.parent; q >= 0; q = proto.pieces[q].parent) if (proto.pieces[q].fa !== 0) x = Math.max(x, pool.x[slot * STRIDE + q]);
+        const notUp = x > 5 / 90 ? 1 : 0;
+        out.screenTotal++; out.screenNotUp += notUp;
+        if (Math.abs(dv.y - fy) > band) continue;
+        out.total++; out.notUp += notUp;
+        if (x > 2 / 9 && x < 8 / 9) out.halfOpen++;
+        if (Math.abs(dv.x) <= 0.7) { out.coreTotal++; out.coreNotUp += notUp; }
+      }
+    }
+    return out;
+  }
+  /** Test only: lay every raised tile flat at once and let it rise again with the normal animation. */
+  function debugReplay() {
+    for (let slot = 0; slot < NSLOT; slot++) {
+      if (!slotUp[slot]) continue;
+      setTileInstant(slot, false);
+      trigger(slot, true, 0);
+    }
+  }
+  function debugFootprint() { return { x: Array.from(fpx), z: Array.from(fpz), inset: Array.from(eInset), camKnown }; }
   /** Pieces that still stand edge-on to the camera at a rotation the world can draw (projected / total area < 0.2). */
   function debugSlivers(limit = 0.2, minSize = 0.35) {
     const out = [];
@@ -956,6 +1141,6 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     return url;
   }
 
-  return { update, isWalkable, stats, debugGroup: group, debugCell, debugMoving, debugSlivers, debugPrograms, debugTopDown, debugFlapTrace, debugTraceResult, debugState, debugReset,
+  return { update, isWalkable, heightAt, stats, debugGroup: group, debugCell, debugMoving, debugBand, debugFootprint, debugReplay, debugSlivers, debugPrograms, debugTopDown, debugFlapTrace, debugTraceResult, debugState, debugReset,
     debugSet, debugTile };
 }

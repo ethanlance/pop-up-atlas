@@ -56,7 +56,7 @@ export function patchShadowChunk({ blockerTaps = 12, filterTaps = 16 } = {}) {
 			gap = hits / gap;
 
 			// Filter radius grows with the gap: sharp at contact, wide far from the caster.
-			float r = clamp( gap * shadowRadius, texel * 3.0, searchR );
+			float r = clamp( gap * shadowRadius, texel * 1.5, searchR );
 			float lit = 0.0;
 			for ( int i = 0; i < ${filterTaps}; i ++ ) {
 				vec2 o = atlasDisk( i * 4 + k, ${filterTaps * 4}, 1.7 ) * r;
@@ -64,7 +64,9 @@ export function patchShadowChunk({ blockerTaps = 12, filterTaps = 16 } = {}) {
 				float z = zr + dot( slope, o ) - texel * 1.5 * ( abs( slope.x ) + abs( slope.y ) );
 				lit += step( z, d );
 			}
-			return mix( 1.0, lit / ${filterTaps}.0, shadowIntensity );
+			// A caster under 2 mm above the receiver (a card lying flat) casts nothing; full strength from 5 mm.
+			float lift = smoothstep( ${(0.012 / SHADOW_RANGE).toExponential(3)}, ${(0.05 / SHADOW_RANGE).toExponential(3)}, gap );
+			return 1.0 - lift * ( 1.0 - lit / ${filterTaps}.0 );
 
 		}
 

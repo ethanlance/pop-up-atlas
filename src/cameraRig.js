@@ -3,9 +3,11 @@
 import * as THREE from 'three';
 
 const PITCH = THREE.MathUtils.degToRad(55); // degrees below the horizon
-const DISTANCE = 9.5; // lead, critic round 1: ~8.4 units across so the traveller is ~85 px tall at 720p
+const DISTANCE = 7.5; // lead, critic round 2: ~6.6 units across (concept village frame sees 6.2)
 const OMEGA = 7; // follow spring: ramp lag 2/OMEGA = 0.29 s, 63 % step time 2.15/OMEGA = 0.31 s
-const LOOK_AHEAD = 1.1; // units the view leads in the heading direction
+const LOOK_AHEAD = 1.1; // units the view leads in the heading direction at full speed
+const SPEED = 2.2; // traveller full speed
+const REST_AHEAD = LOOK_AHEAD - (2 * SPEED) / OMEGA; // lead at rest = net lead when walking, so framing holds on a stop
 const LOOK_OMEGA = 2.2; // slow, so reversing direction pans gently
 const TELEPORT_SPEED = 8; // target speed above this is a jump, not motion
 
@@ -37,14 +39,16 @@ export function createCameraRig(camera) {
     const p = traveller.position, h = traveller.heading;
     if (!started) {
       started = true;
-      lx.x = h.x * LOOK_AHEAD; lz.x = h.z * LOOK_AHEAD;
+      lx.x = h.x * REST_AHEAD; lz.x = h.z * REST_AHEAD;
       fx.x = p.x + lx.x; fz.x = p.z + lz.x;
       prev.set(fx.x, fz.x);
     }
     if (dt > 0) {
       time += dt;
-      damp(lx, h.x * LOOK_AHEAD, 0, LOOK_OMEGA, dt);
-      damp(lz, h.z * LOOK_AHEAD, 0, LOOK_OMEGA, dt);
+      // The follow lag eats 2v/OMEGA of the lead, so the lead grows with speed and "ahead" keeps the larger share.
+      const ahead = REST_AHEAD + (LOOK_AHEAD - REST_AHEAD) * Math.min(1, (traveller.speed ?? SPEED) / SPEED);
+      damp(lx, h.x * ahead, 0, LOOK_OMEGA, dt);
+      damp(lz, h.z * ahead, 0, LOOK_OMEGA, dt);
       const gx = p.x + lx.x, gz = p.z + lz.x;
       let ux = (gx - prev.x) / dt, uz = (gz - prev.y) / dt;
       if (Math.hypot(ux, uz) > TELEPORT_SPEED) { ux = 0; uz = 0; }
@@ -55,7 +59,7 @@ export function createCameraRig(camera) {
     // Slow breathing drift: a few centimetres, far below the follow motion.
     const bx = 0.05 * Math.sin(time * 0.31), by = 0.04 * Math.sin(time * 0.23 + 1.3);
     camera.position.set(fx.x + offset.x + bx, offset.y + by, fz.x + offset.z);
-    focusPoint.set(p.x, 0.3, p.z);
+    focusPoint.set(p.x, 0.3 + (traveller.ground ?? 0), p.z);
   }
 
   return { update, focusPoint };

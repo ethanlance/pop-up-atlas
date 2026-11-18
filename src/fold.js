@@ -2,10 +2,9 @@
 // A flap angle is a fraction x: 1 = flat on its parent, 0 = upright (popped), x < 0 = past upright (overshoot).
 // The rendered angle is foldAngle * x. Integration is semi-implicit Euler at a fixed substep (world.js owns the clock).
 //
-// Rise: a stiff, lightly damped spring follows a target that accelerates from flat to upright in `riseT` seconds
-// and then stops dead. The lag behind the ramp sets the rise time, the speed at the stop sets the overshoot, and the
-// free spring afterwards gives 2-3 quick decaying wobbles. A plain step-driven spring cannot meet "rise >= 0.45 s,
-// 2-3 wobbles and settled by 1.4 s" at once: the wobble has to be faster than the rise.
+// Rise: a stiff spring follows a target that creeps off the page and then snaps upright (1 - u^7 over `riseT`) and
+// stops dead. The card spends about 0.4 s lifting its first 10 degrees, swings from 10 to 70 degrees in about 120 ms
+// (it is never seen hanging half open), overshoots upright by about 12 % and wobbles back once or twice.
 // Fall: a softer, well damped spring aims slightly below the page, so the flap lands with a little speed, is clamped
 // at flat and bounces once, very small (the "slap").
 
@@ -32,10 +31,10 @@ export function flapParams(mass) {
   const m = Math.min(2, Math.max(0.5, mass || 1));
   const k = Math.log2(m); // -1..1
   return {
-    riseT: 0.55 + 0.045 * k, // target ramp duration, s
-    omega: 22.5 - 3 * k, // wobble spring, rad/s
-    zeta: 0.275,
-    ramp: 2.9 + 0.42 * k, // ramp exponent: higher = faster arrival = more overshoot
+    riseT: 0.52 + 0.03 * k, // target ramp duration, s
+    omega: 37 - 2 * k, // wobble spring, rad/s
+    zeta: 0.37 - 0.015 * k,
+    ramp: 7, // ramp exponent: higher = faster arrival = more overshoot
     fallOmega: 15 - 2.5 * k,
     fallZeta: 0.8,
   };
@@ -148,16 +147,19 @@ export function step(pool, i, h) {
 
 /**
  * Measure a sampled angle trace `[{t, x}]` (t = seconds since the flap started to rise, x = fold fraction).
- * Returns rise time, overshoot %, visible wobble count (extrema past upright or back with |x| >= 1 %), settle time.
+ * Returns rise time, overshoot %, visible wobble count (extrema past upright or back with |x| >= 1 %), settle time
+ * and `dwell`, the time spent between 10 and 70 degrees of lift (half-open).
  */
 export function measureRise(trace) {
-  let rise = NaN, overshoot = 0, settle = 0, min = Infinity, max = -Infinity, nan = false;
+  let rise = NaN, overshoot = 0, settle = 0, min = Infinity, max = -Infinity, nan = false, t10 = NaN, t70 = NaN;
   const extrema = [];
   for (let k = 0; k < trace.length; k++) {
     const { t, x } = trace[k];
     if (!Number.isFinite(x)) nan = true;
     if (x < min) min = x;
     if (x > max) max = x;
+    if (Number.isNaN(t10) && x < 8 / 9) t10 = t; // 10 degrees up
+    if (Number.isNaN(t70) && x < 2 / 9) t70 = t; // 70 degrees up
     if (Number.isNaN(rise) && x <= 0) {
       const a = trace[k - 1];
       rise = a ? a.t + (t - a.t) * (a.x / (a.x - x)) : t;
@@ -171,5 +173,5 @@ export function measureRise(trace) {
     }
   }
   if (min < 0) overshoot = -min * 100;
-  return { rise, overshoot, wobbles: extrema.length, extrema, settle, min, max, nan };
+  return { rise, overshoot, wobbles: extrema.length, extrema, settle, min, max, nan, dwell: t70 - t10 };
 }

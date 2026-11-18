@@ -30,15 +30,15 @@ float ign( vec2 p ) {
 const AO_READ = /* glsl */`
 uniform sampler2D tAo;
 uniform vec3 aoTint;
-// Four bilinear taps average the 4x4 noise tile of the AO pass.
+// Four bilinear taps (3x3 tent) merge the 2x2 interleaved AO samples.
 vec3 aoAt( vec2 uv ) {
-  vec2 o = texel * 2.0;
+  vec2 o = texel * 0.5;
   float ao = 0.25 * ( texture2D( tAo, uv + o ).r + texture2D( tAo, uv - o ).r
     + texture2D( tAo, uv + vec2( o.x, - o.y ) ).r + texture2D( tAo, uv + vec2( - o.x, o.y ) ).r );
   return mix( aoTint, vec3( 1.0 ), ao );
 }`;
 
-// Half-res ambient occlusion from depth only (Alchemy estimator, 8 taps, rotated per pixel).
+// Full-res contact occlusion from depth only (Alchemy estimator, 8 of 32 disc taps per pixel, 2x2 interleaved).
 export const AO = /* glsl */`
 varying vec2 vUv;
 uniform sampler2D tDepth;
@@ -53,7 +53,7 @@ vec3 posAt( vec2 uv ) {
 void main() {
   vec3 p = posAt( vUv );
   if ( - p.z > lens.y * 0.9 ) { gl_FragColor = vec4( 1.0 ); return; }
-  vec2 e = texel * 2.0;
+  vec2 e = texel;
   vec3 pl = posAt( vUv - vec2( e.x, 0.0 ) ), pr = posAt( vUv + vec2( e.x, 0.0 ) );
   vec3 pd = posAt( vUv - vec2( 0.0, e.y ) ), pu = posAt( vUv + vec2( 0.0, e.y ) );
   vec3 dx = abs( pl.z - p.z ) < abs( pr.z - p.z ) ? p - pl : pr - p;
@@ -61,17 +61,19 @@ void main() {
   vec3 n = normalize( cross( dx, dy ) );
   float radius = projInfo.z;
   vec2 rUv = radius / ( - 2.0 * p.z * projInfo.xy );
-  float phi = ign( gl_FragCoord.xy ) * 6.2831853;
+  vec2 cell = mod( floor( gl_FragCoord.xy ), 2.0 );
+  float k = cell.x + 2.0 * cell.y;
   float sum = 0.0;
   for ( int i = 0; i < 8; i ++ ) {
-    float r = sqrt( ( float( i ) + 0.5 ) / 8.0 );
-    float a = float( i ) * 2.399963 + phi;
+    float j = float( i ) * 4.0 + k;
+    float r = sqrt( ( j + 0.5 ) / 32.0 );
+    float a = j * 2.399963;
     vec3 v = posAt( vUv + vec2( cos( a ), sin( a ) ) * r * rUv ) - p;
     float vv = dot( v, v );
     float fall = 1.0 - clamp( vv / ( radius * radius * 4.0 ), 0.0, 1.0 );
-    sum += fall * max( dot( v, n ) - 0.012, 0.0 ) / ( vv + 0.004 );
+    sum += fall * max( dot( v, n ) - 0.004, 0.0 ) / ( vv + 0.0004 );
   }
-  float ao = clamp( 1.0 - projInfo.w * sum * radius * 0.16, 0.0, 1.0 );
+  float ao = clamp( 1.0 - projInfo.w * sum * radius * 0.5, 0.0, 1.0 );
   gl_FragColor = vec4( ao );
 }`;
 
@@ -176,6 +178,7 @@ uniform float aspect; // height / width
 uniform vec4 projInfo; // tan(fov/2)*aspect, tan(fov/2)
 uniform mat4 camWorld;
 uniform vec4 lantern; // xyz = world position of the key lamp, w = its distance to the focus
+uniform float aoDebug;
 uniform float pool; // 0 = even light, 1 = full inverse-square pool around the focus
 ${LENS}
 ${AO_READ}
@@ -226,7 +229,7 @@ void main() {
   c += texture2D( tBloom, vUv ).rgb * bloom.rgb * bloom.a;
   // Lamp falloff: the key is a near lamp, so the page is brightest toward it and falls away behind the focus.
   vec3 world = ( camWorld * vec4( ( vUv * 2.0 - 1.0 ) * projInfo.xy * z, - z, 1.0 ) ).xyz - lantern.xyz;
-  float fall = clamp( lantern.w * lantern.w / dot( world, world ), 0.28, 1.35 );
+  float fall = clamp( lantern.w * lantern.w / dot( world, world ), 0.16, 1.15 );
   c = toDisplay( agx( c * exposure * mix( 1.0, fall, pool ) ) );
   vec2 q = ( vUv - 0.5 ) * vec2( 2.0, 2.0 * aspect );
   c *= 1.0 - vignette * pow( min( length( q ), 1.2 ), 2.2 );
@@ -234,28 +237,6 @@ void main() {
   vec2 gp = gl_FragCoord.xy + floor( time * 24.0 ) * vec2( 37.0, 91.0 );
   float g = ( hash( gp ) + hash( gp + 19.19 ) + hash( gp + 47.7 ) + hash( gp + 83.1 ) - 2.0 ) * 1.732;
   c += g * grain * ( 0.6 + 0.8 * ( 1.0 - c ) );
+  if ( aoDebug > 0.5 ) c = aoAt( vUv );
   gl_FragColor = vec4( c, 1.0 );
-}`;
-
-// Dark warm wood for the table: planks along x, ring bands and fine fibre. Returns linear albedo.
-export const WOOD = /* glsl */`
-float atlasHash( vec2 p ) {
-  return fract( sin( dot( p, vec2( 127.1, 311.7 ) ) ) * 43758.5453 );
-}
-float atlasValue( vec2 p ) {
-  vec2 i = floor( p ), f = fract( p );
-  f = f * f * ( 3.0 - 2.0 * f );
-  return mix( mix( atlasHash( i ), atlasHash( i + vec2( 1.0, 0.0 ) ), f.x ),
-    mix( atlasHash( i + vec2( 0.0, 1.0 ) ), atlasHash( i + vec2( 1.0, 1.0 ) ), f.x ), f.y );
-}
-vec3 atlasWood( vec2 p ) {
-  float row = p.y / 3.2;
-  float plank = floor( row );
-  float tone = atlasHash( vec2( plank, 7.0 ) );
-  float warp = atlasValue( vec2( p.x * 0.18 + tone * 40.0, p.y * 1.3 ) );
-  float rings = 0.5 + 0.5 * sin( p.y * 9.0 + warp * 7.0 + tone * 20.0 );
-  float fibre = atlasValue( vec2( p.x * 1.2, p.y * 46.0 ) );
-  float seam = 1.0 - smoothstep( 0.0, 0.012, min( fract( row ), 1.0 - fract( row ) ) );
-  vec3 c = vec3( 0.0437, 0.0176, 0.0080 ) * ( 0.8 + 0.45 * tone ) * ( 0.78 + 0.4 * rings ) * ( 0.86 + 0.28 * fibre );
-  return c * ( 1.0 - 0.65 * seam ) * 1.5;
 }`;

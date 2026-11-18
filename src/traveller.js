@@ -172,7 +172,7 @@ export function createTraveller({ scene, gltf, world, audio }) {
   const fit = new THREE.Group();
   if (src) {
     if (size.x < size.z) { axis.set(1, 0, 0); fit.rotation.y = -Math.PI / 2; } // card modelled in the YZ plane
-    const s = size.y > 0.45 && size.y < 0.68 ? 1 : 0.55 / (size.y || 0.55);
+    const s = size.y > 0.2 && size.y < 1.5 ? 1 : 0.55 / (size.y || 0.55); // trust the authored size unless it is absurd
     fit.scale.setScalar(s);
     fit.position.y = -box.min.y * s;
   }
@@ -192,11 +192,14 @@ export function createTraveller({ scene, gltf, world, audio }) {
     const node = figure.getObjectByName(name);
     if (!node) return null;
     const base = node.quaternion.clone();
-    return { node, base, axis: axis.clone().applyQuaternion(base.clone().invert()) };
+    // A limb that reaches far below its joint (the arm with the walking stick) swings through a smaller angle.
+    const reach = node.position.y - new THREE.Box3().setFromObject(node).min.y;
+    const gain = name.startsWith('arm') ? Math.min(1, 0.2 / Math.max(reach, 0.05)) : 1;
+    return { node, base, gain, axis: axis.clone().applyQuaternion(base.clone().invert()) };
   });
   const q = new THREE.Quaternion();
   const swing = (limb, angle) => {
-    if (limb) limb.node.quaternion.copy(limb.base).multiply(q.setFromAxisAngle(limb.axis, angle));
+    if (limb) limb.node.quaternion.copy(limb.base).multiply(q.setFromAxisAngle(limb.axis, angle * limb.gain));
   };
 
   const marker = buildMarker();
@@ -211,6 +214,31 @@ export function createTraveller({ scene, gltf, world, audio }) {
   const normal = new THREE.Vector2(), scratch = new THREE.Vector2();
   let steps = 0;
   let lightAge = 10, lightSide = 0;
+  let ground = 0; // height of the walkable surface under the feet, low-passed
+
+  // Which cells carry a printed path, for the auto wanderer. Edge bits: n = 1, e = 2, s = 4, w = 8.
+  let pathSockets = null;
+  const cellPaths = new Map();
+  fetch('./assets/tiles.json').then((r) => r.json()).then((j) => {
+    pathSockets = new Map(j.tiles.map((t) => [t.id, ['n', 'e', 's', 'w'].map((k) => t.sockets[k] === 'p')]));
+  }).catch(() => {});
+  function onPath(x, z) {
+    if (!world.debugTile) return false;
+    if (!pathSockets) return null;
+    const cx = Math.round(x / 2), cz = Math.round(z / 2), key = (cx & 0xffff) * 0x10000 + (cz & 0xffff);
+    let bits = cellPaths.get(key);
+    if (bits === undefined) {
+      if (cellPaths.size > 20000) cellPaths.clear();
+      const t = world.debugTile(cx, cz), sockets = pathSockets.get(t.id);
+      bits = 0;
+      if (sockets) for (let i = 0; i < 4; i++) if (sockets[i]) bits |= 1 << ((i + t.rot) & 3); // rotation shifts n -> e -> s -> w
+      cellPaths.set(key, bits);
+    }
+    if (!bits) return false;
+    const lx = x - cx * 2, lz = z - cz * 2, r = 0.3; // the path runs from the cell centre to each marked edge
+    return ((bits & 1) && Math.abs(lx) <= r && lz <= r) || ((bits & 4) && Math.abs(lx) <= r && lz >= -r)
+      || ((bits & 2) && Math.abs(lz) <= r && lx >= -r) || ((bits & 8) && Math.abs(lz) <= r && lx <= r);
+  }
   let markerOpacity = 0;
 
   const ok = (x, z) => world.isWalkable(x, z);
@@ -275,7 +303,7 @@ export function createTraveller({ scene, gltf, world, audio }) {
   }
 
   function update(dt, input) {
-    if (!input.walkable) input.walkable = ok; // the auto wanderer looks ahead through this
+    if (!input.walkable) { input.walkable = ok; input.onPath = onPath; } // the auto wanderer plans through these
     if (dt <= 0) return;
     if (!ok(position.x, position.z)) escape();
 
@@ -302,7 +330,8 @@ export function createTraveller({ scene, gltf, world, audio }) {
     const land = Math.pow(Math.abs(Math.cos(Math.PI * frac)), 8); // 1 at the footfall, 0 in the air
     const sq = SQUASH * hopAmp * land - 0.02 * hopAmp * air; // squash on landing, slight stretch in the air
     yawG.scale.set(1 + sq * 0.5, 1 - sq, 1);
-    root.position.set(position.x, position.y + HOP * hopAmp * air, position.z);
+    ground += ((world.heightAt?.(position.x, position.z) ?? 0) - ground) * (1 - Math.exp(-dt / 0.08));
+    root.position.set(position.x, position.y + ground + HOP * hopAmp * air, position.z);
 
     const stride = Math.sin(Math.PI * phase) * LEG_SWING * hopAmp; // legs meet at each footfall
     swing(limbs[0], stride);
@@ -351,5 +380,5 @@ export function createTraveller({ scene, gltf, world, audio }) {
   }
 
   return { position, heading, update, get speed() { return speedNow; }, get yaw() { return yaw; },
-    get steps() { return steps; }, get hop() { return root.position.y - position.y; }, get squash() { return 1 - yawG.scale.y; } };
+    get steps() { return steps; }, get hop() { return root.position.y - position.y - ground; }, get ground() { return ground; }, get squash() { return 1 - yawG.scale.y; } };
 }

@@ -9,12 +9,13 @@ const port = arg('port', 5183), seed = arg('seed', 7), topOut = arg('top', 'capt
 const fails = [];
 const check = (ok, msg) => { if (!ok) fails.push(msg); return ok; };
 const fmt = (r) => `rise ${r.rise.toFixed(3)} s, overshoot ${r.overshoot.toFixed(1)} %, wobbles ${r.wobbles} ` +
-  `[${r.extrema.map((x) => (x * 100).toFixed(1)).join(', ')}], settle ${r.settle.toFixed(3)} s`;
+  `[${r.extrema.map((x) => (x * 100).toFixed(1)).join(', ')}], settle ${r.settle.toFixed(3)} s, 10-70 deg in ${(r.dwell * 1000).toFixed(0)} ms`;
 function gate(r, label) {
   check(!r.nan, `${label}: NaN in trace`);
   check(r.max <= 1.000001, `${label}: flap went below flat (x max ${r.max})`);
-  check(r.rise >= 0.5 && r.rise <= 0.65, `${label}: rise ${r.rise.toFixed(3)} outside 0.5-0.65 s`);
-  check(r.overshoot >= 10 && r.overshoot <= 15, `${label}: overshoot ${r.overshoot.toFixed(1)} % outside 10-15`);
+  check(r.rise >= 0.5 && r.rise <= 0.6, `${label}: rise ${r.rise.toFixed(3)} outside 0.5-0.6 s`);
+  check(r.overshoot >= 10 && r.overshoot <= 14, `${label}: overshoot ${r.overshoot.toFixed(1)} % outside 10-14`);
+  check(r.dwell <= 0.15, `${label}: ${(r.dwell * 1000).toFixed(0)} ms between 10 and 70 degrees`);
   check(r.wobbles >= 2 && r.wobbles <= 3, `${label}: ${r.wobbles} visible wobbles, want 2-3`);
   check(r.settle < 1.4, `${label}: settle ${r.settle.toFixed(3)} s >= 1.4`);
 }
@@ -31,9 +32,7 @@ function simulate(mass, frameDt) {
     acc += frameDt;
     const n = Math.floor(acc / Fold.SUBSTEP + 1e-9);
     acc -= n * Fold.SUBSTEP;
-    for (let k = 0; k < n; k++) Fold.step(pool, 0, Fold.SUBSTEP);
-    t += n * Fold.SUBSTEP;
-    trace.push({ t, x: pool.x[0] });
+    for (let k = 0; k < n; k++) { Fold.step(pool, 0, Fold.SUBSTEP); t += Fold.SUBSTEP; trace.push({ t, x: pool.x[0] }); }
   }
   return { r: Fold.measureRise(trace), pool };
 }
@@ -87,7 +86,6 @@ async function traceRise(opts, nudge, where) {
     const w = window.__atlas.world;
     window.__atlas.input.setAuto(false); // stand still: the traced flap must not be folded away mid-measurement
     w.debugSet({ nudge });
-    w.debugFlapTrace(opts);
     // Stand one cell below a tile that owns a flap of the wanted mass (tiles far from any earlier test spot).
     let spot = null;
     for (let cz = where[1]; cz < where[1] + 40 && !spot; cz++) {
@@ -95,17 +93,20 @@ async function traceRise(opts, nudge, where) {
         const t = w.debugTile(cx, cz);
         if (!t.inWindow && window.__protoMass?.[t.id] === undefined) { /* masses are learnt from tiles seen in the window */ }
         const masses = window.__protoMass?.[t.id];
-        if (masses && masses.some((m) => m >= (opts.minMass ?? 0) && m <= (opts.maxMass ?? 9))) spot = [cx * 2, cz * 2 + 2];
+        if (masses && masses.some((m) => m >= (opts.minMass ?? 0) && m <= (opts.maxMass ?? 9))) spot = [cx * 2, cz * 2 + 1.2];
       }
     }
     window.__atlas.teleport(...(spot ?? [where[0] * 2, where[1] * 2]));
   }, { opts, nudge, where });
+  // Tiles in frame snap up after a teleport. Lay them flat and let them rise again, and trace one flap of that rise.
+  await page.waitForTimeout(700);
+  await page.evaluate((opts) => { const w = window.__atlas.world; w.debugFlapTrace({ ...opts, maxDist: 1.6 }); w.debugReplay(); }, opts);
   await page.waitForFunction(() => window.__atlas.world.debugTraceResult()?.done, null, { timeout: 15000 });
   const res = await page.evaluate(() => window.__atlas.world.debugTraceResult());
   return { ...res, r: Fold.measureRise(res.samples) };
 }
 
-console.log('== browser: start burst');
+console.log('== browser: first 4 s (start + walking)');
 await page.waitForTimeout(3500);
 // Flap masses per tile id, learnt from the window around the start.
 await page.evaluate(() => {
@@ -117,7 +118,7 @@ await page.evaluate(() => {
   window.__protoMass = m;
 });
 const burst = await page.evaluate(() => window.__atlas.world.debugState());
-console.log(`burst: ${burst.audioRise} rise + ${burst.audioLand} land flap sounds, peak ${burst.maxAudioPer100ms} per 100 ms; ` +
+console.log(`first 4 s: ${burst.audioRise} rise + ${burst.audioLand} land flap sounds, peak ${burst.maxAudioPer100ms} per 100 ms; ` +
   `${burst.geometries} source geometries, window ${burst.window.join('x')} cells, ${burst.indices / 3} triangles in one mesh, ` +
   `${burst.bufferMB.toFixed(1)} MB buffers, live blocks peak ${burst.liveBlocksMax}/${burst.liveBlocksCap}, page ${burst.pageColor}`);
 
@@ -145,7 +146,7 @@ await page.evaluate(() => {
     w.debugReset();
     const orig = w.update, cost = [];
     w.update = (dt, f, h) => { const t0 = performance.now(); orig(dt, f, h); cost.push(performance.now() - t0); };
-    const R = { cost, frames: 0, cells: new Map(), changed: [], missing: [], moving: [], band: [], maxCells: 0, ponds: new Map() };
+    const R = { cost, frames: 0, cells: new Map(), changed: [], missing: [], moving: [], band: [], audit: {}, maxCells: 0, ponds: new Map() };
     const v = tr.position.clone();
     const render = A.look.render;
     // After every rendered frame: every cell inside the camera footprint must hold the same tile as before and be drawn.
@@ -171,7 +172,10 @@ await page.evaluate(() => {
         }
       }
       R.maxCells = Math.max(R.maxCells, n);
-      if (R.frames % 6 === 0) { const m = w.debugMoving(cam, tr.position); R.moving.push(m.inFrame); R.band.push(m.inBand); }
+      if (R.frames % 6 === 0) {
+        const m = w.debugMoving(cam, tr.position); R.moving.push(m.inFrame); R.band.push(m.inBand);
+        const b = w.debugBand(cam, tr.position); for (const k in b) R.audit[k] = (R.audit[k] ?? 0) + b[k];
+      }
     };
     window.__R = R;
     A.resetStats();
@@ -193,7 +197,7 @@ const walk = await page.evaluate(() => {
       in2to6: R.moving.filter((m) => m >= 2 && m <= 6).length / R.moving.length, ge2: R.moving.filter((m) => m >= 2).length / R.moving.length,
       band50: q(R.band, 0.5), bandShare: R.band.reduce((a, b) => a + b, 0) / Math.max(1, R.moving.reduce((a, b) => a + b, 0)) },
     cpu: { n: c.length, avg: c.reduce((a, b) => a + b, 0) / c.length, p95: c[Math.floor(c.length * 0.95)], max: c[c.length - 1] },
-    programs: A.world.debugPrograms(A.renderer), slivers: A.world.debugSlivers(),
+    audit: R.audit, programs: A.world.debugPrograms(A.renderer), slivers: A.world.debugSlivers(), nearSlivers: A.world.debugSlivers(0.35),
     pos: [A.traveller.position.x, A.traveller.position.z] };
 });
 const s = walk.state;
@@ -205,8 +209,14 @@ console.log(`pond cells seen in the footprint (each a different cell entering an
 console.log(`cards mid-rotation on screen (size >= 0.45, fold 10-90 %): p10 ${walk.moving.p10}, median ${walk.moving.p50}, p90 ${walk.moving.p90}; ` +
   `>= 2 in ${(walk.moving.ge2 * 100).toFixed(0)} % of samples, 2-6 in ${(walk.moving.in2to6 * 100).toFixed(0)} %, none in ${(walk.moving.zero * 100).toFixed(0)} %; ` +
   `${(walk.moving.bandShare * 100).toFixed(0)} % of them inside the sharp band`);
+const au = walk.audit, pct = (a, b) => (b ? (100 * a / b).toFixed(2) : '0.00');
+console.log(`rest poses: of ${au.total} flap samples on screen in the sharp band, ${pct(au.notUp, au.total)} % were not fully up ` +
+  `(${pct(au.halfOpen, au.total)} % between 10 and 70 degrees); middle 70 % of the width: ${pct(au.coreNotUp, au.coreTotal)} %; ` +
+  `whole screen: ${pct(au.screenNotUp, au.screenTotal)} % not up (the leading edge)`);
+check(au.total > 0 && au.notUp / au.total < 0.02, `in-band flaps not fully up: ${pct(au.notUp, au.total)} %`);
 console.log(`fold shader programs: ${walk.programs.join(', ')}`);
 console.log(`edge-on pieces at drawable rotations: ${walk.slivers.length ? walk.slivers.map((t) => `${t.id}@${t.rot}[${t.pieces.join(', ')}]`).join('; ') : 'none'}`);
+console.log(`facing under 35 % (thin on screen): ${walk.nearSlivers.map((t) => `${t.id}@${t.rot}[${t.pieces.join(', ')}]`).join('; ') || 'none'}`);
 console.log(`flap sounds while walking: ${s.audioRise} rise + ${s.audioLand} land, peak ${s.maxAudioPer100ms} per 100 ms (engine limit 28)`);
 console.log(`world.update CPU: avg ${walk.cpu.avg.toFixed(3)} ms, p95 ${walk.cpu.p95.toFixed(3)} ms, max ${walk.cpu.max.toFixed(3)} ms over ${walk.cpu.n} frames`);
 console.log(`frame: ${walk.frame.fps.toFixed(0)} fps avg, p95 ${walk.frame.p95.toFixed(2)} ms, ${walk.frame.calls} draw calls, ${walk.frame.tris} tris; ` +
@@ -217,7 +227,6 @@ console.log(`tilesUp ${s.tilesUp}, x range [${s.minX.toFixed(4)}, ${s.maxX.toFix
 check(walk.changed.length === 0, 'a cell in view changed its tile or rotation');
 check(walk.missing.length === 0, 'a cell in view was not drawn');
 check(walk.requery === 0, 'WFC answer changed on re-query');
-check(walk.moving.ge2 >= 0.5, `mid-rotation cards on screen in only ${(walk.moving.ge2 * 100).toFixed(0)} % of samples`);
 check(walk.programs.length >= 2, 'fold patch missing from the shadow or main program');
 check(s.nan === 0 && s.vbNan === 0, 'NaN flap angle or vertex');
 check(s.belowFlat === 0 && s.maxX <= 1.000001, 'flap below flat');
@@ -225,10 +234,30 @@ check(s.minX > -0.25, 'flap overshoot beyond 25 %');
 check(s.maxAudioPer100ms <= 28, `audio rate ${s.maxAudioPer100ms} per 100 ms while walking`);
 check(s.tileDowns > 20, 'tiles behind do not fold back');
 check(s.flickers <= s.tileUps * 0.05, `boundary flicker: ${s.flickers} quick reversals`);
-check(s.tilesUp >= 4 && s.tilesUp < 40, `tilesUp ${s.tilesUp} out of expected range`);
+check(s.tilesUp >= 4 && s.tilesUp < 60, `tilesUp ${s.tilesUp} out of expected range`);
 check(walk.frame.calls <= 250, 'draw calls > 250');
 check(walk.frame.tris <= 400000, 'triangles > 400k');
 check(walk.frame.p95 <= 8, `frame p95 ${walk.frame.p95.toFixed(2)} ms > 8`);
+
+console.log('== browser: heightAt over a bridge');
+const hres = await page.evaluate(async () => {
+  const A = window.__atlas, w = A.world;
+  let cell = null;
+  for (let r = 0; r < 60 && !cell; r++) for (let cz = -r; cz <= r && !cell; cz++) for (let cx = -r; cx <= r && !cell; cx++) if (w.debugTile(cx, cz).id === 'bridge') cell = [cx, cz];
+  if (!cell) return null;
+  A.input.setAuto(false);
+  const flat = w.heightAt(cell[0] * 2, cell[1] * 2); // bridge not in the window yet, or flat
+  A.teleport(cell[0] * 2, cell[1] * 2);
+  await new Promise((r) => setTimeout(r, 800));
+  const prof = (dx, dz) => Array.from({ length: 9 }, (_, i) => +w.heightAt(cell[0] * 2 + dx * (i - 4) / 4, cell[1] * 2 + dz * (i - 4) / 4).toFixed(3));
+  return { cell, tile: w.debugTile(cell[0], cell[1]).drawnRot, flat, alongX: prof(1, 0), alongZ: prof(0, 1), page: w.heightAt(cell[0] * 2 + 6, cell[1] * 2) };
+});
+if (hres) {
+  console.log(`bridge at ${hres.cell} (drawn rot ${hres.tile}): before arrival ${hres.flat}; popped, edge to edge along x ${hres.alongX.join(' ')}; along z ${hres.alongZ.join(' ')}; page ${hres.page}`);
+  const top = Math.max(...hres.alongX, ...hres.alongZ);
+  check(hres.flat === 0 && hres.page === 0, 'heightAt must be 0 on the page and over a flat bridge');
+  check(top > 0.08 && top < 0.5, `bridge deck height ${top} looks wrong`);
+} else console.log('no bridge within 60 cells (skipped)');
 
 console.log('== browser: isWalkable');
 const walkRes = await page.evaluate(({ tiles }) => {
@@ -269,28 +298,42 @@ if (stripOut) {
     const sp = await browser.newPage({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
     await sp.goto(`http://localhost:${port}/?seed=${seed}`);
     await sp.waitForFunction(() => window.__atlas?.world?.debugState);
-    await sp.waitForTimeout(2500);
+    await sp.waitForTimeout(1500);
+    // Start at the head of a lane that is walkable for 18 units, so the walk is straight and steady.
+    const lane = await sp.evaluate((dir) => {
+      const A = window.__atlas, w = A.world, d = { e: [1, 0], n: [0, -1], s: [0, 1] }[dir];
+      for (let r = 0; r < 60000; r++) {
+        const x = ((r * 37) % 161 - 80) * 2 + ((r % 5) - 2) * 0.4, z = ((r * 53) % 163 - 80) * 2 + ((r % 7) - 3) * 0.28;
+        let ok = true;
+        for (let t = -0.3; t <= 10 && ok; t += 0.12) for (const o of [-0.16, 0, 0.16]) if (!w.isWalkable(x + d[0] * t + d[1] * o, z + d[1] * t + d[0] * o)) ok = false;
+        if (ok) { A.teleport(x, z); return [x, z]; }
+      }
+      return null;
+    }, dir);
+    await sp.waitForTimeout(600);
     await sp.keyboard.down(key);
-    await sp.waitForTimeout(2200);
+    await sp.waitForTimeout(2000);
     const tmp = `${stripOut}_${dir}_frames`; fs.mkdirSync(tmp, { recursive: true });
-    // Frames are grabbed inside the page right after a render, every 100 ms, so the spacing is exact.
+    // Frames are grabbed inside the page right after a render, every 100 ms of GAME time (the sum of the loop's dt:
+    // grabbing a frame stalls the page, and the loop caps dt, so wall-clock spacing would be too close).
     const shots = await sp.evaluate(() => new Promise((resolve) => {
       const A = window.__atlas, render = A.look.render, out = [];
-      let next = performance.now();
+      let acc = 0.1;
       A.look.render = (dt) => {
         render(dt);
-        const now = performance.now();
-        if (now < next || out.length >= 12) return;
-        next += 100;
-        const m = A.world.debugMoving(A.input.camera, A.traveller.position, 0.3);
-        out.push({ url: A.renderer.domElement.toDataURL('image/jpeg', 0.9), info: `${m.inFrame}/${m.inBand}` });
+        acc += dt;
+        if (acc < 0.1 || out.length >= 12) return;
+        acc -= 0.1;
+        const m = A.world.debugMoving(A.input.camera, A.traveller.position, 0.3), b = A.world.debugBand(A.input.camera, A.traveller.position);
+        out.push({ url: A.renderer.domElement.toDataURL('image/jpeg', 0.9), info: `${m.inFrame}/${b.notUp}`, z: A.traveller.position.z, x: A.traveller.position.x });
         if (out.length === 12) { A.look.render = render; resolve(out); }
       };
     }));
     await sp.keyboard.up(key);
     shots.forEach((sh, f) => fs.writeFileSync(`${tmp}/f_${String(f).padStart(2, '0')}.jpg`, Buffer.from(sh.url.split(',')[1], 'base64')));
     execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-framerate', '1', '-i', `${tmp}/f_%02d.jpg`, '-vf', 'scale=640:360,tile=4x3', '-frames:v', '1', '-q:v', '3', `${stripOut}_${dir}.jpg`]);
-    console.log(`strip ${stripOut}_${dir}.jpg (100 ms apart): cards mid-rotation on screen / in band: ${shots.map((sh) => sh.info).join(' ')}`);
+    const moved = Math.hypot(shots[11].x - shots[0].x, shots[11].z - shots[0].z);
+    console.log(`strip ${stripOut}_${dir}.jpg (100 ms apart, lane ${lane}, walked ${moved.toFixed(2)} u in 1.1 s): cards mid-rotation on screen / in-band flaps not up: ${shots.map((sh) => sh.info).join(' ')}`);
     await sp.close();
   }
 }

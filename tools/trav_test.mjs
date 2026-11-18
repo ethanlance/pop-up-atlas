@@ -31,11 +31,16 @@ async function open(scale = 1, w = 1440, h = 810) {
     const loop = (t) => {
       if (window.__on) {
         window.__rec.push([t, a.traveller.position.x, a.traveller.position.z, cam.position.x, cam.position.y,
-          cam.position.z, a.traveller.yaw, a.traveller.hop, a.traveller.squash]);
+          cam.position.z, a.traveller.yaw, a.traveller.hop, a.traveller.squash, a.traveller.ground]);
       }
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
+    window.__screen = () => {
+      cam.updateMatrixWorld();
+      const v = a.traveller.position.clone().setY(0.3).project(cam);
+      return [(v.x + 1) / 2, (1 - v.y) / 2];
+    };
     window.__start = () => { window.__rec = []; window.__on = true; };
     window.__stop = () => { window.__on = false; return window.__rec; };
     // Synthetic terrain: rivers every 6 rows with a bridge every 5 columns, round obstacles in ~25 % of cells.
@@ -124,7 +129,7 @@ let rec = await page.evaluate(() => window.__stop());
   const zJit = Math.max(...steady.map((r) => r[5])) - Math.min(...steady.map((r) => r[5]));
   check('camera cross-axis wander while walking u (< 0.01)', zJit.toExponential(2), zJit < 0.01);
   const lead = steady.at(-1)[3] - steady.at(-1)[1];
-  check('camera lead over traveller when cruising u', r3(lead), true, 'look-ahead 1.3 minus follow lag 2v/omega');
+  check('camera lead over traveller when cruising u', r3(lead), true, 'look-ahead 1.1 minus follow lag 2v/omega');
   // wobble after stopping: count sign changes of the stop transient is not observable here; see LOG
 }
 
@@ -204,7 +209,43 @@ rec = await page.evaluate(() => window.__stop());
       width: 2 * dist * Math.tan(cam.fov * Math.PI / 360) * cam.aspect, aspect: cam.aspect };
   });
   check('camera pitch deg (50-60)', r3(view.pitch), view.pitch >= 50 && view.pitch <= 60, `fov ${view.fov}`);
-  check('units across screen at 16:9 (18-22)', r3(view.width), view.width >= 18 && view.width <= 22, `aspect ${r3(view.aspect)}`);
+  check('units across screen at 16:9 (6-7.5, lead round 2)', r3(view.width), view.width >= 6 && view.width <= 7.5, `aspect ${r3(view.aspect)}`);
+}
+
+// ---- 4b. framing: the traveller sits below centre walking up the page, and "ahead" always has the larger share
+for (const [key, name, axis, lo, hi] of [['KeyW', 'up the page: y', 1, 0.55, 0.62], ['KeyS', 'down the page: y', 1, 0.35, 0.47],
+  ['KeyD', 'right: x', 0, 0.38, 0.48], ['KeyA', 'left: x', 0, 0.52, 0.62]]) {
+  await reset();
+  await page.keyboard.down(key);
+  await page.waitForTimeout(3500);
+  const walking = await page.evaluate(() => window.__screen());
+  await page.keyboard.up(key);
+  await rest(2500);
+  const stopped = await page.evaluate(() => window.__screen());
+  check(`framing walking ${name} fraction (${lo}-${hi})`, r3(walking[axis]), walking[axis] >= lo && walking[axis] <= hi,
+    `after stopping ${r3(stopped[axis])}`);
+}
+
+// ---- 4c. ground height: feet follow world.heightAt (a 0.2 high arch at x = 3), low-passed
+await reset();
+await page.evaluate(() => {
+  window.__realHeight = window.__atlas.world.heightAt;
+  window.__atlas.world.heightAt = (x) => 0.2 * Math.max(0, 1 - ((x - 3) / 0.9) ** 2);
+  window.__start();
+});
+await page.keyboard.down('KeyD');
+await page.waitForTimeout(2600);
+await page.keyboard.up('KeyD');
+await rest(400);
+rec = await page.evaluate(() => { window.__atlas.world.heightAt = window.__realHeight; return window.__stop(); });
+{
+  const h = (x) => 0.2 * Math.max(0, 1 - ((x - 3) / 0.9) ** 2);
+  const peak = Math.max(...rec.map((r) => r[9])), err = Math.max(...rec.map((r) => Math.abs(r[9] - h(r[1]))));
+  let jump = 0;
+  for (let i = 1; i < rec.length; i++) jump = Math.max(jump, Math.abs(rec[i][9] - rec[i - 1][9]));
+  const hopTop = Math.max(...rec.filter((r) => Math.abs(r[1] - 3) < 0.3).map((r) => r[7]));
+  check('ground follow: peak on a 0.2 arch u (0.17-0.2)', r3(peak), peak > 0.17 && peak <= 0.2,
+    `max lag error ${r3(err)} u, max per-frame change ${r3(jump)} u, hop apex on top ${r3(hopTop)} u, end ${r3(rec.at(-1)[9])}`);
 }
 
 // ---- 5. collision: never inside a blocked position, slides, no sticking ----------------------------------------
@@ -287,18 +328,33 @@ async function autoRun(mode, secs) {
       still = v < 0.3 ? still + dt : 0;
       longest = Math.max(longest, still);
     }
+    // heading change rate from the walked track, over 0.25 s windows
+    const rates = [];
+    let j = 0;
+    const ang = (i0, i1) => Math.atan2(rec[i1][1] - rec[i0][1], rec[i1][2] - rec[i0][2]);
+    for (let i = 0; i < rec.length; i += 4) {
+      while (j < rec.length && rec[j][0] < rec[i][0] + 250) j++;
+      let k = j;
+      while (k < rec.length && rec[k][0] < rec[i][0] + 500) k++;
+      if (k >= rec.length) break;
+      let d = ang(j, k) - ang(i, j);
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      rates.push(Math.abs(d) / 0.25 * 180 / Math.PI);
+    }
+    rates.sort((x, y) => x - y);
     const thin = rec.filter((_, i) => i % 200 === 0).map((r) => [r[1], r[2]]);
     return { rec: [rec[0], rec.at(-1)], thin, inside: rec.filter((r) => !w(r[1], r[2])).length, longest,
       secs: (rec.at(-1)[0] - rec[0][0]) / 1000,
       planMed: planMs[planMs.length >> 1], planMax: planMs.at(-1),
+      turn50: rates[rates.length >> 1], turn90: rates[Math.floor(rates.length * 0.9)], turnOver: rates.filter((x) => x > 40).length / rates.length,
       len: rec.slice(1).reduce((s, r, i) => s + Math.hypot(r[1] - rec[i][1], r[2] - rec[i][2]), 0) };
   });
   const net = Math.hypot(out.rec[1][1] - out.rec[0][1], out.rec[1][2] - out.rec[0][2]);
   const per40 = out.len * 40 / out.secs;
   const xs = out.thin.map((p) => p[0]), zs = out.thin.map((p) => p[1]);
-  check(`auto (${mode} world, ${secs} s): path per 40 s u (> 60)`, r3(per40), per40 > 60 && out.inside === 0 && out.longest < 1500,
+  check(`auto (${mode} world, ${secs} s): path per 40 s u (> 60)`, r3(per40), per40 > 60 && out.inside === 0 && out.longest < 1500 && out.turn50 <= 36,
     `net ${r3(net)} u, forward (-Z) ${r3(-(out.rec[1][2] - out.rec[0][2]))} u, x range ${r3(Math.min(...xs))}..${r3(Math.max(...xs))}, `
-    + `z range ${r3(Math.min(...zs))}..${r3(Math.max(...zs))}, longest stall ${Math.round(out.longest)} ms, frames inside blocked ${out.inside}, route search ms median ${r3(out.planMed)} max ${r3(out.planMax)}`);
+    + `z range ${r3(Math.min(...zs))}..${r3(Math.max(...zs))}, longest stall ${Math.round(out.longest)} ms, frames inside blocked ${out.inside}, route search ms median ${r3(out.planMed)} max ${r3(out.planMax)}, turn rate deg/s median ${r3(out.turn50)} p90 ${r3(out.turn90)}, share of time above 40 deg/s ${r3(out.turnOver * 100)} %`);
 }
 await autoRun('open', autoSecs);
 await autoRun('fake', autoSecs);
@@ -310,31 +366,36 @@ await page.close();
 
 // ---- close-up captures for visual review ----------------------------------------------------------------------
 if (has('shots') || has('shots-only')) {
-  const { page: p2 } = await open(4, 1440, 810);
-  const clipAt = async (what, w = 150, h = 120) => {
+  const { page: p2 } = await open(2, 1440, 810);
+  const clipAt = async (what, w = 300, h = 240) => {
     const [x, y] = await p2.evaluate((k) => {
       const a = window.__atlas, cam = a.input.camera, src = k === 'marker' ? a.input.markerPos : a.traveller.position;
       cam.updateMatrixWorld();
-      const v = src.clone().setY(0.25).project(cam);
+      const v = src.clone().setY(k === 'marker' ? 0 : 0.35).project(cam);
       return [(v.x + 1) / 2 * innerWidth, (1 - v.y) / 2 * innerHeight];
     }, what);
-    return { x: Math.max(0, x - w / 2), y: Math.max(0, y - h / 2), width: w, height: h };
+    return { x: Math.max(0, Math.min(1440 - w, x - w / 2)), y: Math.max(0, Math.min(810 - h, y - h / 2)), width: w, height: h };
   };
-  await p2.waitForTimeout(1200);
+  await p2.evaluate(() => window.__setWorld(location.hash === '#real' ? 'real' : 'open')); // open: walk straight, real art
+  await p2.waitForTimeout(1500);
   await p2.screenshot({ path: 'captures/trav_close_idle.png', clip: await clipAt('trav') });
-  for (const [name, keys] of [['right', ['KeyD']], ['left', ['KeyA']], ['away', ['KeyW']], ['toward', ['KeyS']], ['diag', ['KeyW', 'KeyA']]]) {
+  const dirs = [['right', ['KeyD']], ['upright', ['KeyD', 'KeyW']], ['away', ['KeyW']], ['upleft', ['KeyW', 'KeyA']],
+    ['left', ['KeyA']], ['downleft', ['KeyA', 'KeyS']], ['toward', ['KeyS']], ['downright', ['KeyS', 'KeyD']]];
+  for (const [name, keys] of dirs) {
     for (const k of keys) await p2.keyboard.down(k);
     await p2.waitForTimeout(1340);
     await p2.screenshot({ path: `captures/trav_close_${name}.png`, clip: await clipAt('trav') });
+    await p2.waitForTimeout(140); // half a step later: the other leg forward
+    await p2.screenshot({ path: `captures/trav_close_${name}_b.png`, clip: await clipAt('trav') });
     for (const k of keys) await p2.keyboard.up(k);
     await p2.waitForTimeout(100);
     if (name === 'right') await p2.screenshot({ path: 'captures/trav_close_stopping.png', clip: await clipAt('trav') });
     await p2.waitForTimeout(700);
   }
-  const near = await clipAt('trav', 0, 0); // click a short walk away, inside the sharp band, and catch the mark
-  await p2.mouse.click(near.x + 70, near.y + 22);
-  await p2.waitForTimeout(160);
-  await p2.screenshot({ path: 'captures/trav_close_marker.png', clip: await clipAt('marker') });
+  const near = await clipAt('trav', 0, 0);
+  await p2.mouse.click(near.x + 200, near.y + 30);
+  await p2.waitForTimeout(250);
+  await p2.screenshot({ path: 'captures/trav_close_marker.png', clip: await clipAt('trav', 520, 240) });
   await p2.screenshot({ path: 'captures/trav_wide.png' });
   await p2.close();
 }

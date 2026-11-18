@@ -11,7 +11,7 @@ from mathutils import Matrix
 from mathutils import Vector
 from mathutils.geometry import tessellate_polygon
 
-T_CARD = 0.016
+T_CARD = 0.018
 GAP = 0.0015
 PAGE_TOP = 0.0045
 EDGE = {'n': (0.0, 1.0), 'e': (1.0, 0.0), 's': (0.0, -1.0), 'w': (-1.0, 0.0)}
@@ -158,17 +158,14 @@ def o_rect(x0, x1, z0, z1):
     return [(x0, z0), (x1, z0), (x1, z1), (x0, z1)]
 
 
-HOUSE = dict(w=0.78, d=0.66, h=0.48, rise=0.48)
+HOUSE = dict(w=1.0, h=0.6, roof=0.8, tilt=30.0, d=0.38, over=0.07)
+HOUSE['rise'] = 1.0 / math.tan(math.radians(HOUSE['tilt']))
 
 
-def o_gable(chimney=False):
-    w, h, rise = HOUSE['w'], HOUSE['h'], HOUSE['rise']
-    pts = [(-w / 2, 0), (w / 2, 0), (w / 2, h)]
-    if chimney:
-        x0, x1, zt = 0.3, 0.19, h + rise + 0.08
-        pts += [(x0, h + rise * (1 - x0 / (w / 2))), (x0, zt), (x1, zt), (x1, h + rise * (1 - x1 / (w / 2)))]
-    pts += [(0, h + rise), (-w / 2, h)]
-    return pts
+def o_house_side():
+    """Side wall in its own card frame: x = height up the front wall, z = depth behind it."""
+    h, d = HOUSE['h'], HOUSE['d']
+    return [(0, 0), (h, 0), (h + d * HOUSE['rise'], d), (0, d)]
 
 
 def o_arch(half=0.62, top=0.42, a=0.38, ah=0.2, n=9):
@@ -183,23 +180,15 @@ def o_arch(half=0.62, top=0.42, a=0.38, ah=0.2, n=9):
     return pts
 
 
-def o_rock(w=0.5, h=0.42, right=True):
-    pts = [(0, 0), (w, 0), (w * 0.9, h * 0.4), (w * 0.6, h * 0.84), (w * 0.3, h), (0, h * 0.92)]
-    return pts if right else [(-x, z) for x, z in pts]
+def o_rock(w=0.7, h=0.5, seed=1):
+    rnd = random.Random(seed)
+    xs = [-0.5, -0.42, -0.2, 0.05, 0.3, 0.46, 0.5]
+    zs = [0, 0.55, 0.9, 1.0, 0.7, 0.35, 0]
+    pts = [(xs[i] * w, zs[i] * h * (rnd.uniform(0.9, 1.0) if 0 < i < 6 else 1)) for i in range(7)]
+    return pts[::-1]
 
 
-def o_half_tree(r=0.42, h=1.25, tw=0.05, right=True, n=10):
-    cz = h - r * 1.05
-    pts = [(0, 0), (tw, 0)]
-    a0 = -math.pi / 2 + math.asin(tw / r)
-    for i in range(n + 1):
-        a = a0 + (math.pi / 2 - a0) * i / n
-        pts.append((r * math.cos(a), cz + r * 1.05 * math.sin(a)))
-    pts[-1] = (0.0, h)
-    return pts if right else [(-x, z) for x, z in pts]
-
-
-def o_leaf_tree(rx_=0.24, h=1.0, tw=0.04, n=14):
+def o_leaf_tree(rx_=0.24, h=1.0, tw=0.04, n=12):
     """Leaf-shaped crown with a pointed top on a short trunk."""
     zb = h * 0.3
     pts = [(-tw, 0), (tw, 0), (tw, zb)]
@@ -233,61 +222,73 @@ def o_fence(w=0.56, h=0.17, n=6):
 
 
 def o_sheep():
-    pts = [(-0.075, 0), (-0.05, 0), (-0.05, 0.045), (0.035, 0.045), (0.035, 0), (0.06, 0), (0.06, 0.05),
-           (0.1, 0.07), (0.135, 0.072), (0.142, 0.11), (0.108, 0.136)]
+    pts = [(-0.08, 0), (-0.045, 0), (-0.045, 0.045), (0.03, 0.045), (0.03, 0), (0.065, 0), (0.065, 0.05),
+           (0.1, 0.07), (0.14, 0.072), (0.146, 0.115), (0.108, 0.14)]
     for i in range(9):
         a = math.radians(25 + 175 * i / 8)
         m = 1 + 0.1 * math.cos(6 * a)
         pts.append((0.1 * m * math.cos(a), 0.105 + 0.062 * m * math.sin(a)))
-    pts += [(-0.1, 0.07), (-0.075, 0.05)]
+    pts += [(-0.1, 0.07), (-0.08, 0.05)]
     return pts
 
 
-def slope_len():
-    return math.hypot(HOUSE['w'] / 2, HOUSE['rise'])
+MILL_HUB = 0.86
+
+
+def o_mill_tower():
+    return [(-0.24, 0), (0.24, 0), (0.16, 0.86), (0.21, 0.86), (0, 1.12), (-0.21, 0.86), (-0.16, 0.86)]
+
+
+def o_mill_sails(a=0.065, L=0.52):
+    plus = [(a, a), (L, a), (L, -a), (a, -a), (a, -L), (-a, -L), (-a, -a), (-L, -a), (-L, a), (-a, a), (-a, L), (a, L)]
+    c, s_ = math.cos(math.pi / 4), math.sin(math.pi / 4)
+    rot = [(x * c - z * s_, MILL_HUB + x * s_ + z * c) for x, z in plus]
+    # Index 6 is the inner corner that points straight down; a stem to the hinge replaces it.
+    return rot[:6] + [(0.028, MILL_HUB - 0.064), (0.028, 0), (-0.028, 0), (-0.028, MILL_HUB - 0.064)] + rot[7:]
 
 
 DECK = dict(run=0.36, rise=0.2, top=0.48, hw=0.25)
 DECK['ramp'] = math.hypot(DECK['run'], DECK['rise'])
 DECK['elev'] = math.degrees(math.atan2(DECK['rise'], DECK['run']))
 
+_HW = o_rect(-HOUSE['w'] / 2, HOUSE['w'] / 2, 0, HOUSE['h'])
+_HR = o_rect(-HOUSE['w'] / 2 - HOUSE['over'], HOUSE['w'] / 2 + HOUSE['over'], -0.06, HOUSE['roof'])
+
 # name -> (outline, style, margin)
 SHAPES = {
-    'tree_leaf_moss': (o_leaf_tree(0.25, 1.0), 'crown_moss', 0.0),
-    'tree_leaf_terra': (o_leaf_tree(0.22, 0.85), 'crown_terra', 0.0),
-    'tree_leaf_sage': (o_leaf_tree(0.26, 1.1), 'crown_sage', 0.0),
-    'tree_round_ochre': (o_tree_round(0.3, 0.92, tw=0.04, lobes=9, phase=0.4), 'crown_ochre', 0.0),
-    'tree_round_moss': (o_tree_round(0.33, 1.05, tw=0.04, lobes=8, phase=2.0), 'crown_moss', 0.0),
-    'conifer': (o_conifer(0.52, 1.1, tw=0.04, th=0.18, tiers=3), 'conifer', 0.0),
-    'bush': (o_bush(0.5, 0.3), 'bush', 0.0),
-    'hay': (o_bush(0.42, 0.36, lobes=1), 'hay', 0.0),
+    'tree_leaf_moss': (o_leaf_tree(0.27, 1.0), 'crown_moss', 0.0),
+    'tree_leaf_terra': (o_leaf_tree(0.25, 0.9), 'crown_terra', 0.0),
+    'tree_leaf_sage': (o_leaf_tree(0.28, 1.1), 'crown_sage', 0.0),
+    'tree_round_ochre': (o_tree_round(0.33, 0.95, tw=0.04, lobes=9, phase=0.4, n=16), 'crown_ochre', 0.0),
+    'tree_round_moss': (o_tree_round(0.36, 1.05, tw=0.04, lobes=8, phase=2.0, n=16), 'crown_moss', 0.0),
+    'conifer': (o_conifer(0.56, 1.1, tw=0.04, th=0.18, tiers=3), 'conifer', 0.0),
+    'bush': (o_bush(0.5, 0.3, n=10), 'bush', 0.0),
+    'hay': (o_bush(0.42, 0.36, lobes=1, n=10), 'hay', 0.0),
     'tuft': (o_tuft(0.3, 0.24, 5, 1), 'tuft', 0.0),
-    'flower': (o_flower(0.36, 0.075, 0.014), 'flower', 0.0),
     'reeds': (o_tuft(0.24, 0.5, 4, 3), 'reeds', 0.0),
-    'rock_r': (o_rock(0.5, 0.42, True), 'rock', 0.0),
-    'rock_l': (o_rock(0.4, 0.32, False), 'rock', 0.0),
-    'vtree_r': (o_half_tree(right=True), 'vtree', 0.0),
-    'vtree_l': (o_half_tree(right=False), 'vtree', 0.0),
-    'sign': (o_sign(), 'sign', 0.007),
-    'fence': (o_fence(), 'fence', 0.007),
-    'sheep': (o_sheep(), 'sheep', 0.006),
-    'house_front': (o_gable(True), 'wall_front', 0.01),
-    'house_back': (o_gable(False), 'wall_back', 0.01),
-    'house_side': (o_rect(-HOUSE['d'] / 2, HOUSE['d'] / 2, 0, HOUSE['h']), 'wall_side', 0.01),
-    'house_roof': (o_rect(-HOUSE['d'] / 2 - 0.05, HOUSE['d'] / 2 + 0.05, -0.04, slope_len() + 0.012), 'roof', 0.008),
+    'rock_a': (o_rock(0.8, 0.55, 1), 'rock_a', 0.0),
+    'rock_b': (o_rock(0.6, 0.36, 2), 'rock_b', 0.0),
+    'sign': (o_sign(), 'sign', 0.0),
+    'fence': (o_fence(), 'fence', 0.0),
+    'sheep': (o_sheep(), 'sheep', 0.0),
+    'mill_tower': (o_mill_tower(), 'mill_tower', 0.0),
+    'mill_sails': (o_mill_sails(), 'mill_sails', 0.0),
+    'hwall_cream': (_HW, 'hwall_cream', 0.0), 'hwall_ochre': (_HW, 'hwall_ochre', 0.0), 'hwall_teal': (_HW, 'hwall_teal', 0.0),
+    'hroof_terra': (_HR, 'hroof_terra', 0.0), 'hroof_brown': (_HR, 'hroof_brown', 0.0), 'hroof_teal': (_HR, 'hroof_teal', 0.0),
+    'hside_cream': (o_house_side(), 'hside_cream', 0.0), 'hside_ochre': (o_house_side(), 'hside_ochre', 0.0),
+    'hside_teal': (o_house_side(), 'hside_teal', 0.0),
     'arch': (o_arch(), 'arch', 0.0),
     'deck_ramp': (o_rect(-DECK['hw'], DECK['hw'], 0, DECK['ramp']), 'deck', 0.0),
     'deck_top': (o_rect(-DECK['hw'], DECK['hw'], 0, DECK['top']), 'deck', 0.0),
-    'hillbig_1': (o_hill(1.7, 1.3, 4, n=22, skew=0.1), 'hill_terra', 0.0),
-    'hillbig_2': (o_hill(1.9, 1.05, 12, n=22, skew=-0.14), 'hill_ochre', 0.0),
-    'hillbig_3': (o_hill(1.8, 0.8, 7, n=22, skew=0.16), 'hill_moss', 0.0),
-    'hillbig_4': (o_hill(1.9, 0.55, 21, n=22, skew=-0.1), 'hill_sage', 0.0),
-    'hillbig_5': (o_hill(1.3, 0.32, 9, n=16), 'hill_moss', 0.0),
-    'hillsmall_1': (o_hill(1.5, 0.85, 31, n=20, skew=0.12), 'hill_ochre', 0.0),
-    'hillsmall_2': (o_hill(1.8, 0.62, 33, n=20, skew=-0.12), 'hill_moss', 0.0),
-    'hillsmall_3': (o_hill(1.4, 0.36, 35, n=18), 'hill_sage', 0.0),
-    'strut_a': (o_rect(-0.09, 0.09, 0, 0.55 / math.sin(math.radians(60))), 'strut', 0.0),
-    'strut_b': (o_rect(-0.09, 0.09, 0, 0.4 / math.sin(math.radians(60))), 'strut', 0.0),
+    'hillbig_1': (o_hill(1.6, 1.6, 4, n=20, skew=0.12), 'hill_terra', 0.0),
+    'hillbig_2': (o_hill(1.84, 1.3, 12, n=20, skew=-0.16), 'hill_ochre', 0.0),
+    'hillbig_3': (o_hill(1.8, 1.02, 7, n=20, skew=0.18), 'hill_moss', 0.0),
+    'hillbig_4': (o_hill(1.86, 0.74, 21, n=20, skew=-0.12), 'hill_sage', 0.0),
+    'hillbig_5': (o_hill(1.5, 0.46, 9, n=16, skew=0.1), 'hill_terra', 0.0),
+    'hillsmall_1': (o_hill(1.5, 1.05, 31, n=18, skew=0.14), 'hill_ochre', 0.0),
+    'hillsmall_2': (o_hill(1.8, 0.82, 33, n=18, skew=-0.14), 'hill_moss', 0.0),
+    'hillsmall_3': (o_hill(1.7, 0.58, 35, n=18, skew=0.1), 'hill_sage', 0.0),
+    'hillsmall_4': (o_hill(1.3, 0.36, 37, n=14, skew=-0.1), 'hill_terra', 0.0),
 }
 
 # traveller card outlines, in the card plane (x forward, z up), relative to the part's joint, before TRAV_K scaling

@@ -3,6 +3,7 @@ import math
 import random
 import zlib
 
+from mathutils import Matrix
 from mathutils import Vector
 
 import tiles_geom as G
@@ -31,6 +32,7 @@ class Tile:
         return f'flap_{kind}_{i}'
 
     def _fall(self, shape, x, y, heading, scale, prefer):
+        """Pick the fall side. Cards fold down toward the camera side (south) unless that leaves the tile."""
         outline = G.scaled(G.SHAPES[shape][0], scale)
         best, best_score = 1, 1e9
         for s in (1, -1):
@@ -39,8 +41,8 @@ class Tile:
             over = 0.0
             for px, pz in outline:
                 wx, wy = x + ax.x * px + d.x * pz, y + ax.y * px + d.y * pz
-                over = max(over, abs(wx) - 0.97, abs(wy) - 0.97)
-            score = max(over, 0.0) * 100 - 0.3 * (d.x * -x + d.y * -y) - (0.2 if s == prefer else 0.0)
+                over = max(over, abs(wx) - 0.96, abs(wy) - 0.96)
+            score = max(over, 0.0) * 100 + (1.0 if d.y > 0 else 0.0)
             if score < best_score:
                 best, best_score = s, score
         return best
@@ -60,9 +62,10 @@ class Tile:
             self.obstacles.append((x, y, obstacle))
         return f
 
-    def nest(self, parent, shape, x, z, tilt, fold, scale=1.0, name=None):
-        f = G.Flap(name or self._name(shape.split('_')[0]), shape, scale, (x, z), G.rx(math.radians(tilt)),
-                   math.radians(fold), parent=parent, delay=round(min(1.0, parent.delay + 0.12), 3))
+    def nest(self, parent, shape, x, z, tilt, fold, scale=1.0, name=None, rot=None):
+        f = G.Flap(name or self._name(shape.split('_')[0]), shape, scale, (x, z),
+                   rot if rot is not None else G.rx(math.radians(tilt)),
+                   math.radians(fold), parent=parent, delay=round(min(1.0, parent.delay + 0.1), 3))
         self.flaps.append(f)
         return f
 
@@ -79,70 +82,50 @@ class Tile:
     def facing(self, k=0, x=0.0, y=0.0):
         """Heading for a free-standing card: toward the camera on unrotated tiles, else diagonal so it reads at any rotation."""
         if self.sym:
-            return (-12.0, 10.0, -6.0, 14.0)[k % 4]
+            return (-3.0, 3.0, -1.5, 2.0)[k % 4]
         return -45.0 if x * y > 0 else 45.0
 
     def prop(self, shape, x, y, scale=1.0, k=0, obstacle=None, occ=0.15):
         return self.add(shape, x, y, heading=self.facing(k, x, y), scale=scale, obstacle=obstacle, occ=occ)
 
-    def place(self, shape, scale=1.0, need=0.2, lim=0.62, obstacle=None, k=0, occ=0.25):
-        """Put one prop at a free spot away from the printed path and water."""
-        for _ in range(400):
-            x, y = self.rnd.uniform(-lim, lim), self.rnd.uniform(-lim, lim)
-            if self.clear(x, y, need, 0.2):
-                return self.prop(shape, round(x, 2), round(y, 2), scale, k, obstacle, occ)
-        return None
+    def clump(self, x, y, items, step=0.11):
+        """Overlapping cards at stepped depths, back first. items: (shape, sideways offset, scale)."""
+        h = 0.0 if self.sym else self.facing(0, x, y)
+        ax = G.rz(h) @ Vector((1.0, 0.0, 0.0))
+        nrm = G.rz(h) @ Vector((0.0, -1.0, 0.0))
+        if nrm.y > 0:
+            nrm = -nrm
+        for i, (shape, dx, sc) in enumerate(items):
+            px, py = x + ax.x * dx + nrm.x * step * i, y + ax.y * dx + nrm.y * step * i
+            self.add(shape, round(px, 3), round(py, 3), heading=h + (self.facing(i) if self.sym else 0.0), scale=sc,
+                     obstacle=round(0.13 * sc, 3), occ=0.3)
 
-    # ---- compound pop-ups
-
-    def tree(self, shape, x, y, scale=1.0, k=0):
-        return self.prop(shape, x, y, scale, k, obstacle=round(0.14 * scale, 3), occ=0.25 * scale)
-
-    def vtree(self, x, y, scale=1.0, spread=45.0):
-        a = self.add('vtree_r', x, y, heading=spread, scale=scale, fall=1, name=self._name('vtree'), occ=0.3)
-        b = self.add('vtree_l', x, y, heading=-spread, scale=scale, fall=1, name=self._name('vtree'),
-                     delay=min(1.0, a.delay + 0.08), occ=0.3)
-        self.obstacles.append((x, y, round(0.2 * scale, 3)))
-        return a, b
-
-    def rock(self, x, y, scale=1.0, spread=45.0):
-        self.add('rock_r', x, y, heading=spread, scale=scale, fall=1, name=self._name('rock'), occ=0.3)
-        self.add('rock_l', x, y, heading=-spread, scale=scale, fall=1, name=self._name('rock'), occ=0.3)
-        self.obstacles.append((x, y, round(0.26 * scale, 3)))
-
-    def house(self, cx, cy, heading=0.0, sc=1.0, tag='house'):
-        """Box house. Both gables fall the same way and the side walls fall outward, so no wall crosses another."""
-        w, d, h, rise = (G.HOUSE[k] * sc for k in ('w', 'd', 'h', 'rise'))
-        r = G.rz(heading)
-
-        def at(lx, ly):
-            v = r @ Vector((lx, ly, 0.0))
-            return round(cx + v.x, 4), round(cy + v.y, 4)
-
+    def house(self, cx, cy, sc=1.0, wall='cream', roof='terra', tag='house'):
+        """Pre-folded box: the front wall rises from its base hinge and carries the roof and both side walls."""
+        hs = G.HOUSE
+        w, h, d = hs['w'] * sc, hs['h'] * sc, hs['d'] * sc
         base = min(0.6, max(0.0, 0.1 + 0.4 * (1 - (cy + 1) / 2)))
-        self.add('house_back', *at(0, d / 2), heading=heading, scale=sc, fall=-1, name=f'flap_{tag}_back', delay=base)
-        self.add('house_front', *at(0, -d / 2), heading=heading, scale=sc, fall=-1, name=f'flap_{tag}_front',
-                 delay=base + 0.06)
-        left = self.add('house_side', *at(-w / 2, 0), heading=heading + 90, scale=sc, fall=-1,
-                        name=f'flap_{tag}_left', delay=base + 0.12)
-        right = self.add('house_side', *at(w / 2, 0), heading=heading - 90, scale=sc, fall=-1,
-                         name=f'flap_{tag}_right', delay=base + 0.16)
-        tilt = math.degrees(math.atan2(w / 2, rise))
-        self.nest(left, 'house_roof', 0.0, h, tilt, 180 - tilt, scale=sc, name=f'flap_{tag}_roof_l')
-        self.nest(right, 'house_roof', 0.0, h, tilt, 180 - tilt, scale=sc, name=f'flap_{tag}_roof_r')
-        self.obstacles.append((cx, cy, round(0.56 * sc, 3)))
-        self.occ.append((cx, cy, 0.75 * sc))
-        self.prints.append(dict(t='plot', x=cx, y=cy, heading=heading, w=w, d=d))
+        front = self.add(f'hwall_{wall}', cx, cy, scale=sc, fall=1, name=f'flap_{tag}_front', delay=round(base, 3))
+        self.nest(front, f'hroof_{roof}', 0.0, h, -hs['tilt'], hs['tilt'], scale=sc, name=f'flap_{tag}_roof')
+        side = Matrix(((0, 1, 0, 0), (0, 0, 1, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
+        self.nest(front, f'hside_{wall}', -w / 2, 0.0, 0, -90, scale=sc, name=f'flap_{tag}_left', rot=side)
+        self.nest(front, f'hside_{wall}', w / 2, 0.0, 0, 90, scale=sc, name=f'flap_{tag}_right', rot=side)
+        self.obstacles.append((cx, round(cy + d / 2, 3), round(0.52 * sc, 3)))
+        self.occ.append((cx, cy + d / 2, 0.6 * sc))
 
-    def hills(self, layers, strut_shapes=()):
-        out = []
+    def hills(self, layers):
         n = len(layers)
         for i, (shape, x, y) in enumerate(layers):
-            f = self.add(shape, x, y, fall=1, name=f'flap_hill_{i}', delay=round(0.05 + 0.6 * i / max(1, n - 1), 3))
-            out.append(f)
-        for f, (shape, x, z) in zip(out, strut_shapes):
-            self.nest(f, shape, x, z, -150.0, -30.0, name=self._name('strut'))
-        return out
+            self.add(shape, x, y, fall=1, name=f'flap_hill_{i}', delay=round(0.05 + 0.6 * i / max(1, n - 1), 3))
+
+    def windmill(self, x, y, sc=1.0):
+        h = 0.0 if self.sym else self.facing(0, x, y)
+        nrm = G.rz(h) @ Vector((0.0, -1.0, 0.0))
+        if nrm.y > 0:
+            nrm = -nrm
+        self.add('mill_tower', x, y, heading=h, scale=sc, name='flap_mill_tower', obstacle=round(0.25 * sc, 3), occ=0.4)
+        self.add('mill_sails', round(x + nrm.x * 0.09, 3), round(y + nrm.y * 0.09, 3), heading=h, scale=sc,
+                 name='flap_mill_sails')
 
     def bridge(self):
         """Raised arched deck (three hinged panels) between two arch cards. Path runs east-west."""
@@ -154,16 +137,22 @@ class Tile:
         self.add('arch', 0.0, 0.28, fall=-1, name='flap_arch_n', delay=0.1)
         self.add('arch', 0.0, -0.28, fall=1, name='flap_arch_s', delay=0.3)
 
+    def free_spot(self, need=0.3, lim=0.5):
+        for _ in range(600):
+            x, y = self.rnd.uniform(-lim, lim), self.rnd.uniform(-lim, lim)
+            if self.clear(x, y, need, 0.25):
+                return round(x, 2), round(y, 2)
+        return None
 
-def _reeds_at_ponds(t, n=1, scale=1.0):
+
+def _reeds_at_ponds(t, scale=1.2):
     for (px, py, pr) in t.routes['ponds']:
-        for k in range(n):
-            for _ in range(60):
-                a = t.rnd.uniform(0, 2 * math.pi)
-                x, y = px + (pr + 0.1) * math.cos(a), py + (pr + 0.1) * math.sin(a)
-                if max(abs(x), abs(y)) < 0.7 and t.clear(x, y, 0.05, 0.15):
-                    t.prop('reeds', round(x, 2), round(y, 2), scale, k, occ=0.15)
-                    break
+        for _ in range(80):
+            a = t.rnd.uniform(0, 2 * math.pi)
+            x, y = px + (pr + 0.1) * math.cos(a), py + (pr + 0.1) * math.sin(a)
+            if max(abs(x), abs(y)) < 0.6 and t.clear(x, y, 0.05, 0.15):
+                t.prop('reeds', round(x, 2), round(y, 2), scale, 0, occ=0.15)
+                break
 
 
 def _sign_at_path_end(t):
@@ -171,8 +160,8 @@ def _sign_at_path_end(t):
         for _ in range(80):
             a = t.rnd.uniform(0, 2 * math.pi)
             x, y = bx + (br + 0.12) * math.cos(a), by + (br + 0.12) * math.sin(a)
-            if max(abs(x), abs(y)) < 0.7 and t.clear(x, y, 0.08, 0.15):
-                t.prop('sign', round(x, 2), round(y, 2), 1.5, 0, obstacle=0.08)
+            if max(abs(x), abs(y)) < 0.6 and t.clear(x, y, 0.08, 0.15):
+                t.prop('sign', round(x, 2), round(y, 2), 1.7, 0, obstacle=0.08)
                 break
 
 
@@ -180,7 +169,9 @@ def _river_obstacles(t):
     t.obstacles += [(round(x, 3), round(y, 3), round(r, 3)) for x, y, r in G.river_obstacles(t.routes)]
 
 
-TREES = ['tree_leaf_moss', 'tree_round_ochre', 'tree_leaf_terra', 'conifer', 'tree_leaf_sage', 'tree_round_moss']
+PAIRS = [[('tree_leaf_moss', -0.14, 1.1), ('tree_round_ochre', 0.14, 0.9)],
+         [('conifer', -0.12, 1.0), ('tree_leaf_terra', 0.16, 0.95)],
+         [('tree_leaf_sage', 0.12, 1.0), ('tree_round_moss', -0.16, 0.8)]]
 
 
 def build_tiles():
@@ -191,104 +182,119 @@ def build_tiles():
         tiles.append(t)
         return t
 
-    # ---- grass (always drawn at rotation 0, so cards face the camera)
-    t = tile('meadow_a', 'gggg', 6.0)
-    t.prop('hay', -0.35, 0.3, 1.3, 0, obstacle=0.2)
-    t.prop('tuft', 0.45, -0.3, 1.2, 1)
-    t.prop('flower', 0.2, 0.45, 1.0, 2)
+    # ---- grass (always drawn at rotation 0, so cards face the camera and fold down toward it)
+    t = tile('meadow_a', 'gggg', 3.0)
+    t.clump(0.0, 0.62, [('tree_round_moss', -0.5, 1.2), ('tree_leaf_sage', 0.05, 1.35), ('tree_round_ochre', 0.5, 1.15),
+                        ('tree_leaf_terra', -0.2, 0.95), ('conifer', 0.3, 0.75)])
+    t.clump(-0.5, -0.25, [('hay', 0.0, 1.5), ('hay', 0.3, 1.1)])
+    t.prop('bush', 0.55, -0.4, 1.3, 1, obstacle=0.2)
 
-    t = tile('meadow_b', 'gggg', 5.0)
-    t.prop('sheep', 0.15, 0.35, 2.2, 0, obstacle=0.2)
-    t.prop('sheep', -0.4, -0.3, 1.8, 1, obstacle=0.17)
-    t.prop('bush', 0.5, -0.4, 1.0, 2, obstacle=0.2)
+    t = tile('meadow_b', 'gggg', 3.0)
+    t.windmill(0.35, 0.62, 1.1)
+    t.clump(-0.5, 0.45, [('fence', 0.0, 1.6), ('tree_leaf_moss', -0.25, 0.9)])
+    t.prop('sheep', -0.3, -0.25, 2.4, 0, obstacle=0.2)
+    t.prop('sheep', 0.35, -0.5, 2.0, 1, obstacle=0.17)
+    t.prop('sheep', 0.6, -0.1, 1.7, 2, obstacle=0.15)
 
     t = tile('tree_single', 'gggg', 3.0)
-    t.vtree(0.0, 0.3, 0.9)
-    t.prop('tuft', -0.5, -0.45, 1.2, 1)
+    t.clump(0.0, 0.62, [('tree_round_moss', 0.0, 1.45), ('tree_leaf_terra', -0.5, 0.95), ('conifer', 0.52, 0.9)])
+    t.clump(0.45, -0.35, [('hay', 0.0, 1.5), ('bush', -0.35, 1.2)])
+    t.prop('bush', -0.55, -0.45, 1.4, 1, obstacle=0.2)
 
-    t = tile('forest', 'gggg', 2.5)
-    for k, (shape, x, y, sc) in enumerate([('conifer', -0.55, 0.55, 1.0), ('tree_leaf_sage', 0.1, 0.62, 1.0),
-                                          ('tree_round_ochre', 0.62, 0.3, 1.0), ('tree_leaf_moss', -0.25, 0.05, 0.95),
-                                          ('tree_leaf_terra', 0.3, -0.35, 1.0), ('conifer', -0.6, -0.45, 0.8)]):
-        t.tree(shape, x, y, sc, k)
+    t = tile('forest', 'gggg', 3.0)
+    t.clump(0.0, 0.78, [('conifer', -0.55, 1.2), ('tree_leaf_sage', -0.1, 1.4), ('tree_round_ochre', 0.5, 1.3)])
+    t.clump(0.0, 0.5, [('tree_leaf_moss', -0.4, 1.15), ('conifer', 0.25, 1.1), ('tree_leaf_terra', 0.62, 1.0)])
+    t.clump(-0.1, 0.2, [('tree_round_moss', -0.5, 0.82), ('tree_leaf_sage', 0.1, 0.78), ('conifer', 0.55, 0.65)])
 
-    t = tile('hill_small', 'gggg', 2.0)
-    t.prints.append(dict(t='contour', bumps=[(0.0, 0.0, 0.85, 0.6, 1.0)], levels=[0.3, 0.6]))
-    t.hills([('hillsmall_1', 0.1, 0.42), ('hillsmall_2', -0.04, 0.08), ('hillsmall_3', 0.14, -0.26)])
-    t.obstacles += [(-0.45, 0.08, 0.4), (0.45, 0.08, 0.4), (0.0, 0.08, 0.42)]
+    t = tile('hill_small', 'gggg', 2.5)
+    t.hills([('hillsmall_1', 0.1, 0.52), ('hillsmall_2', -0.04, 0.39), ('hillsmall_3', 0.06, 0.26),
+             ('hillsmall_4', -0.2, 0.13)])
+    t.obstacles += [(-0.5, 0.32, 0.4), (0.5, 0.32, 0.4), (0.0, 0.32, 0.45)]
+    t.clump(0.5, -0.18, [('conifer', 0.0, 0.6), ('bush', -0.3, 1.2)])
+    t.prop('bush', -0.5, -0.4, 1.3, 1, obstacle=0.2)
 
-    t = tile('hill_big', 'gggg', 1.2)
-    t.prints.append(dict(t='contour', bumps=[(0.0, 0.1, 0.95, 0.75, 1.0)], levels=[0.25, 0.5, 0.75]))
-    t.hills([('hillbig_1', -0.1, 0.66), ('hillbig_2', 0.02, 0.4), ('hillbig_3', -0.04, 0.14),
-             ('hillbig_4', 0.02, -0.12), ('hillbig_5', 0.25, -0.38)], [('strut_a', 0.0, 0.55), ('strut_b', -0.3, 0.4)])
-    t.obstacles += [(-0.55, 0.15, 0.45), (0.0, 0.15, 0.55), (0.55, 0.15, 0.45)]
+    t = tile('hill_big', 'gggg', 1.5)
+    t.hills([('hillbig_1', -0.12, 0.76), ('hillbig_2', 0.04, 0.63), ('hillbig_3', -0.04, 0.5),
+             ('hillbig_4', 0.02, 0.37), ('hillbig_5', 0.2, 0.24)])
+    t.obstacles += [(-0.55, 0.5, 0.45), (0.0, 0.5, 0.55), (0.55, 0.5, 0.45)]
+    t.clump(-0.45, -0.25, [('conifer', 0.0, 0.62), ('conifer', 0.3, 0.5)])
+    t.prop('bush', 0.5, -0.45, 1.3, 1, obstacle=0.2)
 
-    t = tile('house', 'gggg', 1.0)
-    t.house(0.0, -0.38)
-    t.tree('tree_leaf_moss', -0.68, 0.5, 0.85, 0)
-    t.prop('fence', 0.55, 0.42, 1.2, 1, obstacle=0.14)
+    t = tile('house', 'gggg', 1.5)
+    t.house(-0.1, 0.5)
+    t.clump(0.74, 0.5, [('tree_leaf_moss', 0.0, 1.25), ('tree_round_ochre', -0.1, 0.8)])
+    t.clump(0.0, -0.4, [('fence', -0.45, 1.4), ('fence', 0.45, 1.4)], step=0.0)
+    t.prop('bush', -0.6, -0.05, 1.2, 1, obstacle=0.18)
 
-    t = tile('village', 'gggg', 0.6)
-    t.prints.append(dict(t='lanes', pts=[[(-0.9, -0.38), (0.0, -0.3), (0.9, -0.42)], [(0.0, -0.3), (0.02, 0.9)]]))
-    t.house(-0.36, 0.14, sc=0.58, tag='house_a')
-    t.house(0.34, 0.02, sc=0.58, tag='house_b')
-    t.house(-0.1, -0.68, sc=0.5, tag='house_c')
-    t.tree('tree_round_ochre', 0.62, -0.7, 0.6, 1)
+    t = tile('village', 'gggg', 1.0)
+    t.prints.append(dict(t='lanes', pts=[[(-0.9, -0.5), (0.0, -0.45), (0.9, -0.55)]]))
+    t.house(-0.5, 0.6, sc=0.68, wall='ochre', roof='brown', tag='house_a')
+    t.house(0.28, 0.66, sc=0.72, wall='cream', roof='teal', tag='house_b')
+    t.house(-0.1, 0.22, sc=0.7, wall='cream', roof='terra', tag='house_c')
+    t.house(0.6, 0.12, sc=0.6, wall='teal', roof='terra', tag='house_d')
+    t.clump(-0.68, 0.1, [('tree_round_ochre', 0.0, 0.85), ('conifer', 0.2, 0.6)])
 
-    t = tile('pond', 'gggg', 0.7, opts=dict(ponds=[(0.0, 0.0, 0.5)]))
-    t.prop('reeds', -0.55, 0.3, 1.0, 0)
-    t.prop('reeds', 0.45, -0.5, 0.8, 1)
-    t.rock(0.6, 0.45, 0.7)
-    t.obstacles.append((0.0, 0.0, 0.52))
+    t = tile('pond', 'gggg', 0.7, opts=dict(ponds=[(0.0, -0.1, 0.5)]))
+    t.clump(0.0, 0.72, [('tree_leaf_sage', -0.4, 1.2), ('tree_round_moss', 0.1, 1.0), ('tree_leaf_terra', 0.55, 0.9)])
+    t.prop('reeds', -0.62, 0.0, 1.3, 0)
+    t.prop('reeds', 0.6, -0.3, 1.1, 1)
+    t.obstacles.append((0.0, -0.1, 0.52))
 
     t = tile('rock', 'gggg', 1.0)
-    t.rock(-0.05, 0.25, 1.5)
-    t.prop('tuft', 0.5, -0.4, 1.2, 1)
+    t.clump(0.0, 0.45, [('rock_a', -0.1, 1.6), ('rock_b', 0.3, 1.6), ('rock_a', -0.45, 0.8)], step=0.13)
+    t.obstacles.append((0.0, 0.35, 0.6))
+    t.clump(0.5, -0.4, [('conifer', 0.0, 0.6), ('bush', -0.3, 1.2)])
 
     # ---- paths (rotated by the world: free-standing cards sit diagonally)
     t = tile('path_straight', 'pgpg', 4.0)
-    t.tree('tree_leaf_moss', -0.6, 0.1, 0.95, 0)
-    t.prop('tuft', 0.55, -0.45, 1.1, 1)
+    t.clump(-0.62, 0.25, PAIRS[0])
+    t.clump(0.62, 0.3, [('bush', 0.0, 1.3), ('tree_leaf_terra', 0.15, 0.8)])
 
     t = tile('path_corner', 'ppgg', 2.5)
-    t.tree('tree_round_ochre', -0.4, -0.35, 1.0, 1)
+    t.clump(-0.4, 0.0, [('tree_round_moss', -0.1, 1.05), ('tree_leaf_sage', 0.2, 0.95), ('conifer', -0.3, 0.7)])
 
     t = tile('path_t', 'pppg', 0.9)
-    t.prop('sign', -0.45, -0.1, 1.6, 0, obstacle=0.08)
-    t.prop('bush', -0.6, 0.55, 1.0, 1, obstacle=0.2)
+    t.clump(-0.62, 0.3, PAIRS[1])
+    t.prop('sign', -0.45, -0.45, 1.7, 0, obstacle=0.08)
 
     t = tile('path_cross', 'pppp', 0.4)
-    t.prop('sign', 0.48, 0.48, 1.6, 0, obstacle=0.08)
-    t.tree('tree_leaf_terra', -0.58, -0.52, 0.8, 1)
+    t.clump(-0.62, 0.62, [('tree_leaf_terra', 0.0, 0.8), ('bush', 0.2, 1.1)])
+    t.prop('sign', 0.5, 0.5, 1.7, 0, obstacle=0.08)
+    t.prop('hay', 0.6, -0.55, 1.3, 1, obstacle=0.2)
+    t.prop('bush', -0.6, -0.55, 1.3, 1, obstacle=0.2)
 
     t = tile('path_end', 'pggg', 0.5)
-    t.prop('sign', 0.52, -0.1, 1.6, 0, obstacle=0.08)
-    t.prop('hay', -0.55, -0.35, 1.3, 1, obstacle=0.2)
+    t.windmill(-0.5, 0.38, 0.95)
+    t.prop('sign', 0.52, -0.1, 1.7, 0, obstacle=0.08)
+    t.clump(0.55, 0.45, [('hay', 0.0, 1.4), ('hay', 0.25, 1.0)])
 
-    t = tile('house_with_path', 'ggpg', 0.8, opts=dict(path_end_r=0.72, path_blob=False))
-    t.house(0.0, -0.38)
-    t.tree('conifer', -0.7, 0.45, 0.8, 0)
+    t = tile('house_with_path', 'ggpg', 0.8, opts=dict(path_end_r=-0.48, path_blob=False))
+    t.house(0.0, 0.5, wall='ochre', roof='terra')
+    t.clump(-0.72, 0.3, [('conifer', 0.0, 0.9), ('bush', 0.15, 1.1)])
 
     # ---- rivers (blocked)
     t = tile('river_straight', 'rgrg', 3.0, blocked=True)
-    t.prop('reeds', -0.62, 0.35, 1.0, 0)
-    t.tree('tree_leaf_sage', 0.66, -0.2, 0.8, 1)
+    t.clump(-0.68, 0.3, PAIRS[2])
+    t.prop('reeds', 0.58, 0.4, 1.3, 0)
+    t.prop('bush', 0.62, -0.4, 1.2, 1)
 
     t = tile('river_corner', 'rrgg', 1.6, blocked=True)
-    t.tree('tree_leaf_moss', -0.5, -0.45, 1.0, 0)
-    t.prop('reeds', -0.15, 0.5, 1.0, 1)
+    t.clump(-0.4, 0.0, [('tree_leaf_moss', -0.1, 1.05), ('tree_round_ochre', 0.2, 0.9), ('conifer', -0.3, 0.7)])
+    t.prop('reeds', 0.45, 0.5, 1.2, 1)
 
     t = tile('river_source', 'rggg', 0.4, blocked=True)
-    t.rock(-0.05, -0.62, 1.1)
-    t.prop('reeds', 0.62, 0.3, 1.0, 1)
+    t.clump(-0.62, 0.2, [('rock_a', 0.0, 1.2), ('rock_b', 0.15, 1.1)], step=0.13)
+    t.prop('reeds', 0.62, 0.3, 1.3, 1)
+    t.clump(0.6, -0.55, [('bush', 0.0, 1.2)])
 
     t = tile('river_t', 'rrrg', 0.3, blocked=True)
-    t.prop('reeds', -0.55, 0.45, 1.0, 0)
-    t.tree('conifer', -0.6, -0.5, 0.75, 1)
+    t.clump(-0.62, 0.3, PAIRS[1])
+    t.prop('reeds', -0.55, -0.5, 1.3, 0)
 
     t = tile('river_cross', 'rrrr', 0.1, blocked=True)
-    t.prop('reeds', -0.62, 0.62, 1.0, 0)
-    t.prop('reeds', 0.62, -0.62, 0.9, 1)
+    t.prop('reeds', -0.62, 0.62, 1.3, 0)
+    t.prop('reeds', 0.62, -0.62, 1.2, 1)
+    t.prop('bush', 0.62, 0.62, 1.2, 2)
 
     # ---- bridge: river north-south, path east-west
     t = tile('bridge', 'rprp', 1.2)
@@ -298,7 +304,8 @@ def build_tiles():
             t.obstacles.append((sx * 0.5, sy * 0.36, 0.1))
         t.obstacles.append((0.0, sx * 0.72, 0.42))
         t.obstacles.append((0.0, sx * 0.38, 0.1))
-    t.prop('reeds', 0.62, 0.72, 0.9, 0)
+    t.clump(-0.62, 0.66, [('tree_leaf_sage', 0.0, 0.8), ('bush', 0.2, 1.0)])
+    t.prop('reeds', 0.62, -0.7, 1.1, 0)
 
     # ---- mixed sockets: every remaining necklace of g/p/r, so the solver never dead-ends
     mixed = [
@@ -311,8 +318,13 @@ def build_tiles():
         t = tile(tid, socks, w)
         _river_obstacles(t)
         _sign_at_path_end(t)
-        _reeds_at_ponds(t, 1)
-        t.place(TREES[n % len(TREES)], 0.85, need=0.22, obstacle=0.12, k=n)
+        _reeds_at_ponds(t)
+        spot = t.free_spot(0.22, 0.55) or t.free_spot(0.12, 0.6)
+        if spot:
+            t.clump(spot[0], spot[1], PAIRS[n % 3])
+        spot = t.free_spot(0.12, 0.62)
+        if spot:
+            t.prop('bush', spot[0], spot[1], 1.2, 1, obstacle=0.18, occ=0.3)
 
     for t in tiles:
         t.flat_height = G.finalize(t.flaps, t.id)

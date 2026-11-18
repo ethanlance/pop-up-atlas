@@ -271,3 +271,96 @@
 - Perf gate x3 (load average 4.5): 418-425 fps, p95 2.9-3.1 ms, 26 calls, 70k tris.
 - NOT done: look agent's request for a finite page / page edge. The brief for the world is an endless page; lead to decide.
 - tools/fold_test.mjs --strip captures/name writes 12-frame strips (100 ms apart, grabbed in-page) walking e / n / s.
+
+## 2026-11-18 lead — critic round 2 result and routing
+- Blind critic round 2: candidate 4.5 (was 3.2) vs reference 7.5; reference identified 4/4 at 85–90 % (was 97 %); motion 4 (was 3).
+  Nothing regressed, so nothing reverted. Critic notes the reference itself reads as foam/clay; keep our thin-card honesty.
+- Camera DISTANCE 9.5 -> 7.5 (~6.6 units across).
+- DECISION: page stays endless (user brief: "endless open pop-up book"), so no page edge/table; gutter crease carries the book read.
+- Strip capture was mistimed (screenshots ~250 ms apart, auto-walk turning). tools/ab.mjs now records video while walking
+  straight and extracts frames exactly 100 ms apart.
+- Routed round 3: tiles (bigger overlapping layers, clusters, no white stroke, no scribed circles, solid-colour houses,
+  roof joined to wall), look (dusk shadow colour, contact band, lantern falloff, blur cap), world (everything in the focus
+  band upright, rise at the top of frame, no streak shadows from flat cards, heightAt for the bridge), traveller (bridge height).
+
+## 2026-11-18 00:33 UTC tiles agent — round 3 rebuild (ids, sockets, node names, traveller unchanged)
+- Colours: terracotta #C0664A, moss #7C8C50; the rest as in round 2.
+- Density: every grass tile has a hero cluster. Hills are 5 (hill_big, back layer 1.6 tall) or 4 (hill_small) profile
+  cards 0.13 apart in terracotta/ochre/moss/sage. Trees are 0.7–1.5 tall in overlapping clumps of 2–5 at 0.11 depth steps.
+  New windmill (tower + sails cards) on meadow_b and path_end. Village is 4 overlapping houses.
+- House is now one pre-folded box: flap_<tag>_front rises from its base hinge and carries flap_<tag>_roof (hinge on the
+  wall's top edge, foldAngle +PI/6) and flap_<tag>_left / _right (hinge on the wall's vertical edges, foldAngle -+PI/2).
+  Solid walls (cream, ochre or teal), roof terracotta, brown or teal, 1.29 tall and 1.0 wide. There is no back wall.
+- Cards fold down toward the camera side (+Z at rot 0) unless that would leave the tile; lean is at most 3 degrees.
+  V-folds are gone: rotating tiles use single cards and clumps at 45 degrees.
+- No printed outlines or rings: contour circles removed, die-cut margin stroke removed from every piece, atlas padding
+  raised to 8 px so mips do not bleed the atlas background onto card edges. Card thickness 0.018.
+- 183 flaps, mean 288 tris per tile, max 748 (forest). glb 2.15 MB. Flap art is 160 px/unit.
+- CORRECTION: mean is 311 tris per tile, not 288.
+
+## 2026-11-18 00:35 UTC traveller agent — round 3
+- `node tools/trav_test.mjs --real`: 37/37 pass (5 new checks: framing x4, ground follow). Lead's DISTANCE 7.5 and
+  LOOK_AHEAD 1.1 kept. The "units across" check now expects 6-7.5 (measured 6.44); pitch constant is still 55.
+- Ground: feet follow `world.heightAt?.(x, z) ?? 0` through a 0.08 s low-pass; the hop rides on top; `focusPoint.y`
+  rises with it. Shadows are the real meshes' shadows, so they follow. Tested on a synthetic 0.2 arch at full speed:
+  peak 0.193, lag error 0.055 u at most, 0.013 u per frame at most, hop apex 0.060 on top. NOT tested on the real
+  bridge deck: `world.heightAt` exists but returned 0 at three bridge centres when I ran.
+- Figure: the rebuilt glb (0.755 tall) is now used at its authored size (round 2 code shrank anything over 0.68 to
+  0.55). Joint positions are read from the nodes. An arm that reaches far below its joint swings less (stick arm gain
+  0.46). Close-ups in 8 directions, two step phases each (captures/trav_sheet.png): lit in every direction, no dark
+  silhouette, no edge-on sliver, tilt-back and lean read. Those shots use an all-walkable world so he walks straight;
+  hills hiding him there are the test's doing.
+- Camera: the lead now grows with speed, from 0.47 u at rest to 1.1 u at full speed, which cancels the follow lag, so
+  framing does not move on a stop. Measured screen position: walking up the page 60.5 % down (61.2 % after stopping),
+  down the page 39.6 %, right 43.2 % across, left 57.4 %. Step response 63 % at 0.30 s, overshoot 0.6 %; velocity
+  deviation walking 0.76 %.
+- Auto: heading rate is capped at 35 deg/s with clear ground ahead and rises to 200 deg/s as an obstacle closes inside
+  2.2 u; angular acceleration is limited; the goal meander is slower (13 deg/s at most). The planner halves the cost of
+  printed paths (bridges are paths). Measured over 40 s: open world median 4.4 deg/s, p90 13.5, never above 40;
+  real world seed 1 median 12.7 deg/s, p90 60, 21 % of the time above 40 deg/s (all obstacle avoidance), longest
+  stall 83 ms, 87.0 u of path, 64 u forward. A separate 40 s run spent 32 % of the time on a path (7 % of cells
+  carry one) and made 22 u forward, so path-following costs forward progress on some stretches.
+- ASSUMPTION / REQUEST (world agent): path cells come from `world.debugTile(cx, cz)` ({id, rot}) plus tiles.json
+  fetched by traveller.js. A small public `world.tileAt(cx, cz)` would be safer than a debug call. Rotation convention
+  checked on three bridges: the path axis matches the walkable axis.
+
+## 2026-11-18 00:35 UTC look agent — round 3 (critic round 2 fixes)
+- Shadows: key 38 deg elevation, dir (-0.668, 0.616, 0.417), colour (1.0, 0.78, 0.52); fill 0.27 x (0.44, 0.58, 1.0);
+  hemisphere 0.62 with a warm-neutral sky (0.62, 0.50, 0.46). Key angular size 0.10 rad, minimum filter 1.5 texels.
+  A caster less than 0.012 units above its receiver casts nothing, full strength from 0.05 (flat cards make no streaks).
+- Contact occlusion: the AO pass is now full resolution, radius 0.07 units, 8 of 32 disc taps per pixel interleaved
+  over 2x2 and merged by the 3x3 tent; tint (0.24, 0.21, 0.23). Debug view: `?aodbg=1`.
+- Lantern: post falloff is inverse square from a lamp 2.6 units above the page, 1.0 unit from the traveller toward
+  the key; clamp 0.16..1.15. Vignette 27 %. Exposure 1.05.
+- DOF: CoC cap 0.85 % of frame width (12 px at 1440), knee 0.75 % of height, uncapped edge CoC 1.9 % of height.
+  Bloom 0.14 at threshold 0.4. Grain sigma 0.022.
+- Table and fog removed (lead: the page is endless). Background stays a dark warm colour.
+- No motion blur or temporal history exists in the look passes; only the grain pattern changes (24 Hz).
+- Perf: gate command, 5 runs: p95 12.4, 13.9, 8.2 ms at load average 6-7, then 3.1 and 4.1 ms at load 4.3; 25 draw calls.
+
+## 2026-11-18 00:52 UTC world agent — round 3 (rest poses, snap rise, shadows, bridge height), tested against the 16:32 tiles.glb
+- NEW on the world object: `heightAt(x, z) -> number`. World units, 0 on the page. Over a bridge it returns the height
+  of the popped deck (height field rasterised from the up-facing triangles of the glb pieces whose name contains
+  `deck`, turned by the tile's drawn rotation) and scales smoothly to 0 while the deck is flat or the cell is outside
+  the tile window. Measured on tile `bridge`: 0 / 0.081 / 0.222 / 0.222 / 0.195 / 0.056 / 0 across the span.
+- Rise / fold region is now the camera footprint on the page. The camera is read in `tiles.onBeforeRender` (last
+  rendered frame); before the first frame and while the rig travels after a teleport, the contract rig (pitch 55,
+  distance 7.5, FOV 28, 16:10, look-ahead 1.1) stands in. If the lead changes the rig, DEFAULT_RIG in world.js only
+  affects those first frames.
+  Rule: a tile is up when its centre is inside every frame edge by that edge's inset. Non-leading edges: up from 0.7
+  units outside (bottom 1.7, tall cards lean in). Leading edge (faces the heading): top +0.1 inside, bottom 1.3 outside,
+  sides 0.3 outside, except tiles level with the traveller (within 1.9 units up or down the page) which rise 2.9 units
+  outside a side edge, so they enter the sharp band standing. Fold-down only 1.8 units outside the frame (sides 3.6,
+  bottom 2.8). At a start or teleport tiles snap to their pose, nothing animates in frame.
+- No reversals: a flap in motion always finishes before the opposite order is carried out.
+- Spring: target 1 - u^7, omega 37, zeta 0.37. Rise 0.52-0.58 s, overshoot 11.7-13.1 %, extrema about -12 / +3.4 %,
+  settled by 0.74-0.83 s, 10 to 70 degrees in 117-129 ms (about 0.4 s is spent on the first 10 degrees).
+- Shadow pass only (customDepthMaterial, define POP_SHADOW): a card within 8 degrees of flat is sunk 0.3 under the page
+  and comes up between 8 and 25 degrees, so flat cards cast nothing and the shadow grows as the card lifts.
+- Window 13x11 -> 11x9 cells. Tiles mesh 46k triangles (the 16:32 glb is denser), frame 88-93k tris, buffers 17.4 MB.
+- Measured (30 s auto walk): in-band flaps not fully up 0.11 % (0.09 % between 10 and 70 degrees), middle 70 % of the
+  width 0.00 %; cells in view changed 0 / not drawn 0; audio peak 27 per 100 ms. Gate x3 at load average 10: 370-377 fps,
+  p95 3.7-3.8 ms, 25 calls, 88k tris.
+- Still edge-on (projected / total area < 0.2): house, village, house_with_path side walls at rot 0 (box sides);
+  house_with_path front at rot 1 and 3, roof and side walls at rot 2; bridge arches at rot 1.
+- Strips: tools/fold_test.mjs --strip now teleports to a clear 10-unit lane and spaces frames by 100 ms of game time.

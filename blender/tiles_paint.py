@@ -13,8 +13,8 @@ def hexc(h):
 
 
 PALETTE = {
-    'page': '#EADFC6', 'core': '#F6F0E1', 'ochre': '#C9994F', 'terracotta': '#B05A40',
-    'moss': '#6E7D46', 'sage': '#9FAE84', 'teal': '#5A9292', 'brown': '#74492F',
+    'page': '#EADFC6', 'core': '#F6F0E1', 'ochre': '#C9994F', 'terracotta': '#C0664A',
+    'moss': '#7C8C50', 'sage': '#9FAE84', 'teal': '#5A9292', 'brown': '#74492F',
 }
 PAGE, CORE, OCHRE, TERRA, MOSS, SAGE, TEAL, BROWN = (hexc(PALETTE[k]) for k in
                                                     ('page', 'core', 'ochre', 'terracotta', 'moss', 'sage', 'teal', 'brown'))
@@ -239,16 +239,7 @@ def paint_base(t, n):
 
     for p in t.prints:
         kind = p['t']
-        if kind == 'contour':
-            f = np.zeros(X.shape)
-            for bx, by, brx, bry, bh in p['bumps']:
-                f += bh * np.exp(-((X - bx) / brx) ** 2 - ((Y - by) / bry) ** 2)
-            gy, gx = np.gradient(f, c.px)
-            g = np.hypot(gx, gy) + 1e-6
-            c.blend(np.clip((f - 0.2) * 2, 0, 1) * 0.22, SAGE)
-            for lv in p['levels']:
-                c.blend(c.cov(np.abs(f - lv) / g, 0.005) * 0.4, mix(BROWN, OCHRE, 0.4))
-        elif kind == 'lanes':
+        if kind == 'lanes':
             for ln in p['pts']:
                 d, s, side, L = line_field(X, Y, ln)
                 c.blend(c.cov(d, 0.08), mix(PAGE, OCHRE, 0.45))
@@ -379,83 +370,63 @@ def st_hill(c, D, o, rnd, col=MOSS):
         k += 1
 
 
-def _window(c, x0, x1, z0, z1):
-    c.rect(x0 - 0.014, x1 + 0.014, z0 - 0.014, z1 + 0.014, CORE, 1.0, INK, 0.006)
-    c.rect(x0, x1, z0, z1, TEAL, 1.0)
-    c.seg(((x0 + x1) / 2, z0), ((x0 + x1) / 2, z1), 0.011, CORE)
-    c.seg((x0, (z0 + z1) / 2), (x1, (z0 + z1) / 2), 0.011, CORE)
-    c.rect(x0 - 0.022, x1 + 0.022, z0 - 0.034, z0 - 0.014, TERRA, 1.0)
+def _scored(c, col, lines, axis='z'):
+    for k, v in enumerate(lines):
+        if axis == 'z':
+            c.blend(c.cov(np.abs(c.Y - v - 0.012 * np.sin(c.X * 14 + k * 2.0)), 0.006) * 0.6, _tone(col, -0.14))
+        else:
+            c.blend(c.cov(np.abs(c.X - v), 0.006) * 0.6, _tone(col, -0.14))
 
 
-def _wall(c, h, x0, x1):
-    c.img[:] = mix(CORE, OCHRE, 0.2)
-    c.blend(c.cov(c.Y, 0.06), BROWN)
+def st_hwall(c, D, o, rnd, col=CORE):
+    h = G.HOUSE['h']
+    c.img[:] = col
+    _scored(c, col, (0.2, 0.42))
+    c.rect(-0.1, 0.1, -0.02, 0.33, BROWN, 1.0)
+    c.disc((0.055, 0.16), 0.016, OCHRE)
+    win = TEAL if col is not TEAL else CORE
+    c.rect(0.22, 0.4, 0.22, 0.42, win, 1.0)
+    c.rect(-0.4, -0.22, 0.22, 0.42, win, 1.0)
+    c.blend(c.cov(c.Y, 0.035) * 0.8, _tone(col, -0.2))
 
 
-def st_wall_front(c, D, o, rnd):
-    w, h, rise = G.HOUSE['w'], G.HOUSE['h'], G.HOUSE['rise']
-    _wall(c, h, -w / 2, w / 2)
-    gable = h + rise * (1 - np.abs(c.X) / (w / 2))
-    ch = c.cov(gable - c.Y, -0.012) * (c.X > 0.1)
-    c.blend(ch, mix(TERRA, BROWN, 0.5))
-    c.blend(ch * c.cov(np.abs(c.Y - (h + rise + 0.055)), 0.016), BROWN)
-    c.seg((-w / 2, h), (w / 2, h), 0.024, BROWN)
-    for sx in (-1, 1):
-        c.seg((sx * (w / 2 - 0.03), 0.05), (sx * (w / 2 - 0.03), h), 0.022, BROWN)
-        c.seg((sx * w / 2, h), (0, h + rise), 0.055, BROWN)
-    c.rect(-0.105, 0.105, 0.0, 0.32, BROWN, 1.0)
-    c.rect(-0.08, 0.08, 0.02, 0.29, TERRA, 1.0, INK, 0.005)
-    for k in range(1, 4):
-        c.seg((-0.08 + 0.04 * k, 0.02), (-0.08 + 0.04 * k, 0.29), 0.004, INK, 0.5)
-    c.disc((0.05, 0.16), 0.014, OCHRE)
-    for sx in (-1, 1):
-        _window(c, sx * 0.255 - 0.07, sx * 0.255 + 0.07, 0.16, 0.33)
-    c.disc((0, h + 0.17), 0.072, CORE)
-    c.disc((0, h + 0.17), 0.054, TEAL)
-    c.ring((0, h + 0.17), 0.072, 0.007, INK)
-    c.seg((-0.05, h + 0.17), (0.05, h + 0.17), 0.008, CORE)
-    c.seg((0, h + 0.12), (0, h + 0.22), 0.008, CORE)
-
-
-def st_wall_back(c, D, o, rnd):
-    w, h, rise = G.HOUSE['w'], G.HOUSE['h'], G.HOUSE['rise']
-    _wall(c, h, -w / 2, w / 2)
-    c.seg((-w / 2, h), (w / 2, h), 0.024, BROWN)
-    for sx in (-1, 1):
-        c.seg((sx * (w / 2 - 0.03), 0.05), (sx * (w / 2 - 0.03), h), 0.022, BROWN)
-        c.seg((sx * w / 2, h), (0, h + rise), 0.055, BROWN)
-    for sx in (-1, 0, 1):
-        _window(c, sx * 0.24 - 0.06, sx * 0.24 + 0.06, 0.16, 0.33)
-    _window(c, -0.055, 0.055, h + 0.1, h + 0.24)
-
-
-def st_wall_side(c, D, o, rnd):
-    d, h = G.HOUSE['d'], G.HOUSE['h']
-    _wall(c, h, -d / 2, d / 2)
-    c.seg((-d / 2, h - 0.012), (d / 2, h - 0.012), 0.03, BROWN)
-    for sx in (-1, 1):
-        c.seg((sx * (d / 2 - 0.03), 0.05), (sx * (d / 2 - 0.03), h), 0.022, BROWN)
-        _window(c, sx * 0.15 - 0.065, sx * 0.15 + 0.065, 0.16, 0.33)
-
-
-def st_roof(c, D, o, rnd):
+def st_hroof(c, D, o, rnd, col=TERRA):
     x0, x1, z0, z1 = _bbox(o)
-    c.img[:] = TERRA
-    row = 0.09
-    k = np.floor(c.Y / row)
-    fz = c.Y / row - k
-    fx = ((c.X / 0.1) + 0.5 * (k % 2)) % 1.0
-    scal = 0.5 + 0.42 * np.sqrt(np.clip(1 - (2 * fx - 1) ** 2, 0, 1))
-    c.blend(c.cov(np.abs(fz - (1 - scal)) * row, 0.0045) * 0.6, _tone(TERRA, -0.3))
-    c.blend(c.cov(c.Y, z0 + 0.03), _tone(TERRA, -0.25))
+    c.img[:] = col
+    _scored(c, col, [z1 * k for k in (0.2, 0.4, 0.6, 0.8)])
+
+
+def st_hside(c, D, o, rnd, col=CORE):
+    c.img[:] = _tone(col, -0.1)
+    _scored(c, _tone(col, -0.1), (0.2, 0.42), axis='x')
+    c.rect(0.24, 0.42, 0.11, 0.27, TEAL if col is not TEAL else CORE, 1.0)
+
+
+def st_mill_tower(c, D, o, rnd):
+    c.img[:] = mix(CORE, OCHRE, 0.25)
+    _scored(c, mix(CORE, OCHRE, 0.25), (0.25, 0.5, 0.72))
+    c.blend(c.cov(0.86 - c.Y, 0.0), TERRA)
+    c.rect(-0.08, 0.08, -0.02, 0.26, BROWN, 1.0)
+    c.rect(-0.05, 0.05, 0.42, 0.56, TEAL, 1.0)
+
+
+def st_mill_sails(c, D, o, rnd):
+    c.img[:] = BROWN
+    hub = G.MILL_HUB
+    u = (c.X + (c.Y - hub)) / math.sqrt(2)
+    v = (-c.X + (c.Y - hub)) / math.sqrt(2)
+    for p_, q_ in ((u, v), (v, u)):
+        blade = (np.abs(q_) < 0.04) & (np.abs(p_) > 0.12) & (np.abs(p_) < 0.5)
+        c.blend(blade * 1.0, CORE)
+        c.blend(blade * (((np.abs(p_) * 14) % 1.0) < 0.14) * 1.0, BROWN)
+    c.disc((0, hub), 0.05, OCHRE)
 
 
 def st_arch(c, D, o, rnd):
     c.img[:] = TERRA
     er = np.sqrt((c.X / 0.38) ** 2 + (np.maximum(c.Y, 0) / 0.2) ** 2)
     for k in range(1, 4):
-        c.blend(c.cov(np.abs(er - 1 - 0.28 * k) * 0.2, 0.005) * 0.55, _tone(TERRA, -0.2))
-    c.blend(c.cov(D, 0.03) * (c.Y > 0.02), mix(TERRA, BROWN, 0.55))
+        c.blend(c.cov(np.abs(er - 1 - 0.28 * k) * 0.2, 0.005) * 0.55, _tone(TERRA, -0.16))
 
 
 def st_deck(c, D, o, rnd):
@@ -469,13 +440,11 @@ def st_deck(c, D, o, rnd):
         c.seg((sx * 0.21, z0), (sx * 0.21, z1), 0.02, mix(OCHRE, BROWN, 0.6))
 
 
-def st_rock(c, D, o, rnd):
+def st_rock(c, D, o, rnd, col=BROWN):
     x0, x1, z0, z1 = _bbox(o)
-    sg = 1 if x1 > 0.1 else -1
-    w = max(abs(x0), abs(x1))
-    c.img[:] = mix(BROWN, CORE, 0.45) if sg > 0 else mix(BROWN, CORE, 0.3)
-    c.poly([(sg * w * 0.45, z1 * 0.55), (sg * w * 0.92, z1 * 0.38), (sg * w, 0), (sg * w * 0.2, 0)], BROWN, 0.35)
-    c.line([(sg * w * 0.3, z1), (sg * w * 0.45, z1 * 0.55), (sg * w * 0.2, 0)], 0.008, BROWN, 0.7)
+    c.img[:] = col
+    c.line([(x0 * 0.4, z1 * 0.9), (x0 * 0.1, z1 * 0.5), (x0 * 0.3, 0)], 0.008, _tone(col, -0.2), 0.8)
+    c.line([(x0 * 0.1, z1 * 0.5), (x1 * 0.6, z1 * 0.35), (x1 * 0.5, 0)], 0.008, _tone(col, -0.2), 0.8)
 
 
 def st_sign(c, D, o, rnd):
@@ -516,9 +485,11 @@ def st_core(c, D, o, rnd):
 
 def st_sheep(c, D, o, rnd):
     c.img[:] = CORE
+    for _ in range(10):
+        c.ring((rnd.uniform(-0.08, 0.07), rnd.uniform(0.07, 0.15)), 0.016, 0.005, mix(CORE, OCHRE, 0.5), 0.9)
     c.blend(c.cov(c.Y, 0.046) * 1.0, BROWN)
     c.blend(((c.X > 0.088) & (c.Y < 0.15)) * 1.0, BROWN)
-    c.disc((0.122, 0.105), 0.007, CORE)
+    c.disc((0.122, 0.105), 0.008, CORE)
 
 
 def st_trav_body(c, D, o, rnd):
@@ -567,15 +538,25 @@ STYLES = {
     'crown_sage': lambda c, D, o, r: st_crown(c, D, o, r, SAGE),
     'crown_terra': lambda c, D, o, r: st_crown(c, D, o, r, TERRA),
     'crown_ochre': lambda c, D, o, r: st_crown(c, D, o, r, OCHRE),
-    'vtree': st_vtree, 'bush': st_bush, 'conifer': st_conifer, 'hay': st_hay, 'tuft': st_tuft, 'flower': st_flower,
-    'reeds': st_reeds,
+    'bush': st_bush, 'conifer': st_conifer, 'hay': st_hay, 'tuft': st_tuft, 'reeds': st_reeds,
     'hill_terra': lambda c, D, o, r: st_hill(c, D, o, r, TERRA),
     'hill_ochre': lambda c, D, o, r: st_hill(c, D, o, r, OCHRE),
     'hill_moss': lambda c, D, o, r: st_hill(c, D, o, r, MOSS),
     'hill_sage': lambda c, D, o, r: st_hill(c, D, o, r, SAGE),
-    'wall_front': st_wall_front, 'wall_back': st_wall_back, 'wall_side': st_wall_side, 'roof': st_roof,
-    'arch': st_arch, 'deck': st_deck, 'rock': st_rock, 'sign': st_sign, 'fence': st_fence,
-    'strut': st_strut, 'tab': st_tab, 'core': st_core, 'sheep': st_sheep,
+    'hwall_cream': lambda c, D, o, r: st_hwall(c, D, o, r, CORE),
+    'hwall_ochre': lambda c, D, o, r: st_hwall(c, D, o, r, mix(OCHRE, CORE, 0.35)),
+    'hwall_teal': lambda c, D, o, r: st_hwall(c, D, o, r, TEAL),
+    'hroof_terra': lambda c, D, o, r: st_hroof(c, D, o, r, TERRA),
+    'hroof_brown': lambda c, D, o, r: st_hroof(c, D, o, r, BROWN),
+    'hroof_teal': lambda c, D, o, r: st_hroof(c, D, o, r, TEAL),
+    'hside_cream': lambda c, D, o, r: st_hside(c, D, o, r, CORE),
+    'hside_ochre': lambda c, D, o, r: st_hside(c, D, o, r, mix(OCHRE, CORE, 0.35)),
+    'hside_teal': lambda c, D, o, r: st_hside(c, D, o, r, TEAL),
+    'mill_tower': st_mill_tower, 'mill_sails': st_mill_sails,
+    'arch': st_arch, 'deck': st_deck, 'sign': st_sign, 'fence': st_fence,
+    'rock_a': lambda c, D, o, r: st_rock(c, D, o, r, BROWN),
+    'rock_b': lambda c, D, o, r: st_rock(c, D, o, r, mix(BROWN, CORE, 0.3)),
+    'tab': st_tab, 'core': st_core, 'sheep': st_sheep,
     'trav_body': st_trav_body, 'trav_leg': st_trav_leg, 'trav_arm': st_trav_arm, 'trav_stand': st_trav_stand,
 }
 

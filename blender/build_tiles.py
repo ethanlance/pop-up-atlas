@@ -24,7 +24,7 @@ import tiles_paint as P  # noqa: E402
 ROOT = os.path.dirname(HERE)
 OUT = os.path.join(ROOT, 'public', 'assets')
 DEBUG = os.path.join(HERE, 'tiles_out')
-PAD = 3
+PAD = 8
 BASE_Z = 0.003
 TAB_Z = 0.0042
 
