@@ -26,6 +26,8 @@ class Tile:
         self.count = {}
         self.flat_height = 0.0
 
+    REACH = 1.4  # hinge offset + card height; a flat free card may overhang its tile by up to 0.45
+
     def _name(self, kind):
         i = self.count.get(kind, 0)
         self.count[kind] = i + 1
@@ -48,18 +50,28 @@ class Tile:
         return best
 
     def add(self, shape, x, y, heading=0.0, scale=1.0, fall=None, name=None, delay=None, tab=True, obstacle=None,
-            prefer=1, occ=0.1, tilt=0.0):
-        if fall is None:
+            prefer=1, occ=0.1, tilt=0.0, free=True):
+        """Page-level flap. Free cards face the camera (hinge along +X), fold toward it, and are sized to stay in the tile."""
+        if free:
+            # Free cards fold away from the camera, so they lie on their plain back with the print up.
+            fall = -1
+            zmax = max(z for _, z in G.SHAPES[shape][0])
+            if self.sym:
+                y = round(min(y, self.REACH - zmax * scale), 3)
+            else:
+                scale = round(min(scale, max(0.2, (self.REACH - max(abs(x), abs(y))) / zmax)), 3)
+        elif fall is None:
             fall = self._fall(shape, x, y, heading, scale, prefer)
         if delay is None:
             delay = min(1.0, max(0.0, 0.05 + 0.55 * (1 - (y + 1) / 2) + 0.3 * self.rnd.random()))
         f = G.Flap(name or self._name(shape.split('_')[0]), shape, scale, (x, y),
                    G.rz(heading) @ G.rx(math.radians(tilt)), fall * math.pi / 2 - math.radians(tilt),
                    delay=round(delay, 3), tab=tab and tilt == 0.0)
+        f.free = 1 if free else 0
         self.flaps.append(f)
         self.occ.append((x, y, occ))
         if obstacle:
-            self.obstacles.append((x, y, obstacle))
+            self.obstacles.append((x, y, round(obstacle * min(1.0, max(0.6, scale)), 3) if free else obstacle))
         return f
 
     def nest(self, parent, shape, x, z, tilt, fold, scale=1.0, name=None, rot=None):
@@ -80,62 +92,85 @@ class Tile:
         return len(set(self.sockets.values())) == 1
 
     def facing(self, k=0, x=0.0, y=0.0):
-        """Heading for a free-standing card: toward the camera on unrotated tiles, else diagonal so it reads at any rotation."""
-        if self.sym:
-            return (-3.0, 3.0, -1.5, 2.0)[k % 4]
-        return -45.0 if x * y > 0 else 45.0
+        """Small lean so a row of cards does not look ruled. Every free card faces the camera."""
+        return (-3.0, 3.0, -1.5, 2.0)[k % 4]
 
     def prop(self, shape, x, y, scale=1.0, k=0, obstacle=None, occ=0.15):
         return self.add(shape, x, y, heading=self.facing(k, x, y), scale=scale, obstacle=obstacle, occ=occ)
 
     def clump(self, x, y, items, step=0.11):
-        """Overlapping cards at stepped depths, back first. items: (shape, sideways offset, scale)."""
-        h = 0.0 if self.sym else self.facing(0, x, y)
-        ax = G.rz(h) @ Vector((1.0, 0.0, 0.0))
-        nrm = G.rz(h) @ Vector((0.0, -1.0, 0.0))
-        if nrm.y > 0:
-            nrm = -nrm
+        """Overlapping camera-facing cards at stepped depths, back first. items: (shape, sideways offset, scale)."""
+        prev = None
         for i, (shape, dx, sc) in enumerate(items):
-            px, py = x + ax.x * dx + nrm.x * step * i, y + ax.y * dx + nrm.y * step * i
-            self.add(shape, round(px, 3), round(py, 3), heading=h + (self.facing(i) if self.sym else 0.0), scale=sc,
-                     obstacle=round(0.13 * sc, 3), occ=0.3)
+            want = y - step * i if prev is None or step == 0 else min(y - step * i, prev - max(step, 0.08))
+            f = self.add(shape, round(x + dx, 3), round(want, 3), heading=self.facing(i), scale=sc,
+                         obstacle=round(0.13 * sc, 3), occ=0.3)
+            prev = f.pos[1]
+
+    def dress(self, shapes, margin=0.3):
+        """Put props on a rotating tile, clear of the printed path and water, as large and as central as that allows."""
+        for k, (shape, sc, half) in enumerate(shapes):
+            zmax = max(z for _, z in G.SHAPES[shape][0])
+            for _step in range(8):
+                lim = 0.95 - half * sc
+                best = None
+                for _ in range(500):
+                    x, y = self.rnd.uniform(-lim, lim), self.rnd.uniform(-lim, lim)
+                    m = max(abs(x), abs(y))
+                    if m + zmax * sc > self.REACH or not self.clear(x, y, margin + half * sc, 0.4):
+                        continue
+                    if best is None or m < best[0]:
+                        best = (m, x, y)
+                if best:
+                    self.add(shape, round(best[1], 2), round(best[2], 2), heading=self.facing(k), scale=round(sc, 2),
+                             obstacle=0.14 if shape != 'reeds' else None, occ=0.2)
+                    break
+                sc *= 0.87
 
     def house(self, cx, cy, sc=1.0, wall='cream', roof='terra', tag='house'):
         """Pre-folded box: the front wall rises from its base hinge and carries the roof and both side walls."""
         hs = G.HOUSE
         w, h, d = hs['w'] * sc, hs['h'] * sc, hs['d'] * sc
         base = min(0.6, max(0.0, 0.1 + 0.4 * (1 - (cy + 1) / 2)))
-        front = self.add(f'hwall_{wall}', cx, cy, scale=sc, fall=1, name=f'flap_{tag}_front', delay=round(base, 3))
+        front = self.add(f'hwall_{wall}', cx, cy, scale=sc, fall=1, name=f'flap_{tag}_front', delay=round(base, 3),
+                         free=False)
         self.nest(front, f'hroof_{roof}', 0.0, h, -hs['tilt'], hs['tilt'], scale=sc, name=f'flap_{tag}_roof')
         side = Matrix(((0, 1, 0, 0), (0, 0, 1, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
         self.nest(front, f'hside_{wall}', -w / 2, 0.0, 0, -90, scale=sc, name=f'flap_{tag}_left', rot=side)
-        self.nest(front, f'hside_{wall}', w / 2, 0.0, 0, 90, scale=sc, name=f'flap_{tag}_right', rot=side)
+        self.nest(front, f'hside_{wall}', w / 2, 0.0, 0, 90, scale=sc, name=f'flap_{tag}_right', rot=side).flip = True
         self.obstacles.append((cx, round(cy + d / 2, 3), round(0.52 * sc, 3)))
         self.occ.append((cx, cy + d / 2, 0.6 * sc))
 
     def hills(self, layers):
         n = len(layers)
+        prev = None
         for i, (shape, x, y) in enumerate(layers):
-            self.add(shape, x, y, fall=1, name=f'flap_hill_{i}', delay=round(0.05 + 0.6 * i / max(1, n - 1), 3))
+            f = self.add(shape, x, y if prev is None else min(y, prev - 0.12), name=f'flap_hill_{i}',
+                         delay=round(0.05 + 0.6 * i / max(1, n - 1), 3))
+            prev = f.pos[1]
+        mid = (self.flaps[-n].pos[1] + prev) / 2
+        self.obstacles += [(-0.5, round(mid, 3), 0.42), (0.0, round(mid, 3), 0.5), (0.5, round(mid, 3), 0.42)]
 
     def windmill(self, x, y, sc=1.0):
-        h = 0.0 if self.sym else self.facing(0, x, y)
-        nrm = G.rz(h) @ Vector((0.0, -1.0, 0.0))
-        if nrm.y > 0:
-            nrm = -nrm
-        self.add('mill_tower', x, y, heading=h, scale=sc, name='flap_mill_tower', obstacle=round(0.25 * sc, 3), occ=0.4)
-        self.add('mill_sails', round(x + nrm.x * 0.09, 3), round(y + nrm.y * 0.09, 3), heading=h, scale=sc,
-                 name='flap_mill_sails')
+        top = 1.24  # sail tip height at scale 1
+        if self.sym:
+            y = min(y, self.REACH - top * sc)
+        else:
+            sc = min(sc, (self.REACH - max(abs(x), abs(y) + 0.09)) / top)
+        self.add('mill_tower', x, round(y, 3), scale=round(sc, 3), name='flap_mill_tower', obstacle=0.25, occ=0.4)
+        self.add('mill_sails', x, round(y - 0.09, 3), scale=round(sc, 3), name='flap_mill_sails')
 
     def bridge(self):
         """Raised arched deck (three hinged panels) between two arch cards. Path runs east-west."""
         dk = G.DECK
         ramp = self.add('deck_ramp', -(dk['run'] + dk['top'] / 2), 0.0, heading=90, fall=1, tilt=90 - dk['elev'],
-                        name='flap_deck_a', delay=0.2)
+                        name='flap_deck_a', delay=0.2, free=False)
         top = self.nest(ramp, 'deck_top', 0.0, dk['ramp'], dk['elev'], -dk['elev'], name='flap_deck_b')
-        self.nest(top, 'deck_ramp', 0.0, dk['top'], dk['elev'], -dk['elev'], name='flap_deck_c')
-        self.add('arch', 0.0, 0.28, fall=-1, name='flap_arch_n', delay=0.1)
-        self.add('arch', 0.0, -0.28, fall=1, name='flap_arch_s', delay=0.3)
+        end = self.nest(top, 'deck_ramp', 0.0, dk['top'], dk['elev'], -dk['elev'], name='flap_deck_c')
+        for f in (ramp, top, end):
+            f.flip = True
+        self.add('arch', 0.0, 0.28, fall=-1, name='flap_arch_n', delay=0.1, free=False).flip = True
+        self.add('arch', 0.0, -0.28, fall=1, name='flap_arch_s', delay=0.3, free=False)
 
     def free_spot(self, need=0.3, lim=0.5):
         for _ in range(600):
@@ -161,7 +196,7 @@ def _sign_at_path_end(t):
             a = t.rnd.uniform(0, 2 * math.pi)
             x, y = bx + (br + 0.12) * math.cos(a), by + (br + 0.12) * math.sin(a)
             if max(abs(x), abs(y)) < 0.6 and t.clear(x, y, 0.08, 0.15):
-                t.prop('sign', round(x, 2), round(y, 2), 1.7, 0, obstacle=0.08)
+                t.prop('sign', round(x, 2), round(y, 2), 1.3, 0, obstacle=0.08)
                 break
 
 
@@ -209,14 +244,12 @@ def build_tiles():
     t = tile('hill_small', 'gggg', 2.5)
     t.hills([('hillsmall_1', 0.1, 0.52), ('hillsmall_2', -0.04, 0.39), ('hillsmall_3', 0.06, 0.26),
              ('hillsmall_4', -0.2, 0.13)])
-    t.obstacles += [(-0.5, 0.32, 0.4), (0.5, 0.32, 0.4), (0.0, 0.32, 0.45)]
     t.clump(0.5, -0.18, [('conifer', 0.0, 0.6), ('bush', -0.3, 1.2)])
     t.prop('bush', -0.5, -0.4, 1.3, 1, obstacle=0.2)
 
     t = tile('hill_big', 'gggg', 1.5)
     t.hills([('hillbig_1', -0.12, 0.76), ('hillbig_2', 0.04, 0.63), ('hillbig_3', -0.04, 0.5),
              ('hillbig_4', 0.02, 0.37), ('hillbig_5', 0.2, 0.24)])
-    t.obstacles += [(-0.55, 0.5, 0.45), (0.0, 0.5, 0.55), (0.55, 0.5, 0.45)]
     t.clump(-0.45, -0.25, [('conifer', 0.0, 0.62), ('conifer', 0.3, 0.5)])
     t.prop('bush', 0.5, -0.45, 1.3, 1, obstacle=0.2)
 
@@ -245,55 +278,53 @@ def build_tiles():
     t.obstacles.append((0.0, 0.35, 0.6))
     t.clump(0.5, -0.4, [('conifer', 0.0, 0.6), ('bush', -0.3, 1.2)])
 
-    # ---- paths (rotated by the world: free-standing cards sit diagonally)
+    # ---- paths (rotated by the world; free cards stay camera-facing, so they are short and clear of the road)
+    SMALL = [('conifer', 0.9, 0.28), ('tree_leaf_terra', 1.1, 0.25), ('tree_round_ochre', 1.0, 0.33),
+             ('tree_leaf_moss', 1.0, 0.27), ('bush', 1.1, 0.25), ('tree_leaf_sage', 0.9, 0.28)]
+
+    def pick(n, k):
+        return [SMALL[(k + i * 2) % len(SMALL)] for i in range(n)]
+
     t = tile('path_straight', 'pgpg', 4.0)
-    t.clump(-0.62, 0.25, PAIRS[0])
-    t.clump(0.62, 0.3, [('bush', 0.0, 1.3), ('tree_leaf_terra', 0.15, 0.8)])
+    t.dress(pick(2, 0))
 
     t = tile('path_corner', 'ppgg', 2.5)
-    t.clump(-0.4, 0.0, [('tree_round_moss', -0.1, 1.05), ('tree_leaf_sage', 0.2, 0.95), ('conifer', -0.3, 0.7)])
+    t.dress(pick(3, 1))
 
     t = tile('path_t', 'pppg', 0.9)
-    t.clump(-0.62, 0.3, PAIRS[1])
-    t.prop('sign', -0.45, -0.45, 1.7, 0, obstacle=0.08)
+    t.dress(pick(2, 2))
 
     t = tile('path_cross', 'pppp', 0.4)
-    t.clump(-0.62, 0.62, [('tree_leaf_terra', 0.0, 0.8), ('bush', 0.2, 1.1)])
-    t.prop('sign', 0.5, 0.5, 1.7, 0, obstacle=0.08)
-    t.prop('hay', 0.6, -0.55, 1.3, 1, obstacle=0.2)
-    t.prop('bush', -0.6, -0.55, 1.3, 1, obstacle=0.2)
+    t.prop('sign', 0.62, 0.62, 1.2, 0, obstacle=0.08)
+    t.prop('hay', -0.64, -0.64, 1.0, 1, obstacle=0.2)
+    t.prop('bush', 0.64, -0.64, 0.9, 2, obstacle=0.2)
 
     t = tile('path_end', 'pggg', 0.5)
-    t.windmill(-0.5, 0.38, 0.95)
-    t.prop('sign', 0.52, -0.1, 1.7, 0, obstacle=0.08)
-    t.clump(0.55, 0.45, [('hay', 0.0, 1.4), ('hay', 0.25, 1.0)])
+    t.windmill(-0.62, -0.5, 1.0)
+    t.prop('sign', 0.5, -0.1, 1.5, 0, obstacle=0.08)
+    t.dress(pick(1, 3))
 
     t = tile('house_with_path', 'ggpg', 0.8, opts=dict(path_end_r=-0.48, path_blob=False))
     t.house(0.0, 0.5, wall='ochre', roof='terra')
-    t.clump(-0.72, 0.3, [('conifer', 0.0, 0.9), ('bush', 0.15, 1.1)])
+    t.dress(pick(2, 4))
 
     # ---- rivers (blocked)
+    REED = ('reeds', 1.0, 0.1)
     t = tile('river_straight', 'rgrg', 3.0, blocked=True)
-    t.clump(-0.68, 0.3, PAIRS[2])
-    t.prop('reeds', 0.58, 0.4, 1.3, 0)
-    t.prop('bush', 0.62, -0.4, 1.2, 1)
+    t.dress([REED] + pick(2, 5), margin=0.08)
 
     t = tile('river_corner', 'rrgg', 1.6, blocked=True)
-    t.clump(-0.4, 0.0, [('tree_leaf_moss', -0.1, 1.05), ('tree_round_ochre', 0.2, 0.9), ('conifer', -0.3, 0.7)])
-    t.prop('reeds', 0.45, 0.5, 1.2, 1)
+    t.dress([REED] + pick(3, 0), margin=0.08)
 
     t = tile('river_source', 'rggg', 0.4, blocked=True)
-    t.clump(-0.62, 0.2, [('rock_a', 0.0, 1.2), ('rock_b', 0.15, 1.1)], step=0.13)
-    t.prop('reeds', 0.62, 0.3, 1.3, 1)
-    t.clump(0.6, -0.55, [('bush', 0.0, 1.2)])
+    t.dress([('rock_b', 1.2, 0.3), REED] + pick(2, 1), margin=0.08)
 
     t = tile('river_t', 'rrrg', 0.3, blocked=True)
-    t.clump(-0.62, 0.3, PAIRS[1])
-    t.prop('reeds', -0.55, -0.5, 1.3, 0)
+    t.dress([REED] + pick(2, 2), margin=0.08)
 
     t = tile('river_cross', 'rrrr', 0.1, blocked=True)
-    t.prop('reeds', -0.62, 0.62, 1.3, 0)
-    t.prop('reeds', 0.62, -0.62, 1.2, 1)
+    t.prop('reeds', -0.62, 0.62, 1.2, 0)
+    t.prop('reeds', 0.62, -0.62, 1.1, 1)
     t.prop('bush', 0.62, 0.62, 1.2, 2)
 
     # ---- bridge: river north-south, path east-west
@@ -304,8 +335,8 @@ def build_tiles():
             t.obstacles.append((sx * 0.5, sy * 0.36, 0.1))
         t.obstacles.append((0.0, sx * 0.72, 0.42))
         t.obstacles.append((0.0, sx * 0.38, 0.1))
-    t.clump(-0.62, 0.66, [('tree_leaf_sage', 0.0, 0.8), ('bush', 0.2, 1.0)])
-    t.prop('reeds', 0.62, -0.7, 1.1, 0)
+    t.prop('reeds', 0.62, -0.7, 0.9, 0)
+    t.prop('bush', -0.66, 0.68, 0.8, 1)
 
     # ---- mixed sockets: every remaining necklace of g/p/r, so the solver never dead-ends
     mixed = [
@@ -319,12 +350,7 @@ def build_tiles():
         _river_obstacles(t)
         _sign_at_path_end(t)
         _reeds_at_ponds(t)
-        spot = t.free_spot(0.22, 0.55) or t.free_spot(0.12, 0.6)
-        if spot:
-            t.clump(spot[0], spot[1], PAIRS[n % 3])
-        spot = t.free_spot(0.12, 0.62)
-        if spot:
-            t.prop('bush', spot[0], spot[1], 1.2, 1, obstacle=0.18, occ=0.3)
+        t.dress(pick(2, n), margin=0.25)
 
     for t in tiles:
         t.flat_height = G.finalize(t.flaps, t.id)

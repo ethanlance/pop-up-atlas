@@ -3,16 +3,14 @@
 // Frame: shadow map -> scene (HDR, MSAA, depth) -> AO (half res) -> CoC prep -> bokeh gather -> bloom -> composite.
 import * as THREE from 'three';
 import { addDebugCards } from './look_debug.js';
-import { patchShadowChunk, patchTranslucency, SHADOW_RANGE } from './look_shadow.js';
+import { patchPageBounce, patchShadowChunk, patchTranslucency, SHADOW_RANGE } from './look_shadow.js';
 import * as SH from './look_shaders.js';
 
 // Direction from the focus to each light (three.js axes), from the concept frames.
-const KEY_DIR = new THREE.Vector3(-0.668, 0.616, 0.417).normalize(); // concept azimuth, raised to 38 degrees
+const KEY_DIR = new THREE.Vector3(-0.578, 0.731, 0.361).normalize(); // concept azimuth, raised to 47 degrees
 const FILL_DIR = new THREE.Vector3(0.360, 0.883, -0.302).normalize();
-const KEY_COLOR = new THREE.Color().setRGB(1.0, 0.78, 0.52); // 3000 K seen at a 3900 K white balance, a little lifted
+const KEY_COLOR = new THREE.Color().setRGB(1.0, 0.83, 0.61); // 3000 K seen at a 3900 K white balance, a little lifted
 const FILL_COLOR = new THREE.Color().setRGB(0.44, 0.58, 1.0); // #7E90B8 at full value
-const BOUNCE_DIR = new THREE.Vector3(0.80, 0.14, -0.50).normalize(); // light off the page onto card backs
-const BOUNCE_COLOR = new THREE.Color().setRGB(1.0, 0.78, 0.55);
 const TABLE_COLOR = new THREE.Color(0x3b2416);
 const MAX_HEIGHT = 1.7; // tallest pop-up in world units; bounds the shadow volume
 const CORNERS = [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, 1], [0, -1]]; // last two calibrate the CoC
@@ -21,11 +19,12 @@ export function createLook({ renderer, scene, camera }) {
   const params = new URLSearchParams(location.search);
   const low = params.get('q') === 'low';
   const num = (k, d) => (params.has(k) ? Number(params.get(k)) : d);
-  const keyAngle = num('soft', 0.10); // angular diameter of the key in radians; sets the penumbra width
+  const keyAngle = num('soft', 0.36); // angular diameter of the key in radians; sets the penumbra width
 
   // ---- lights -------------------------------------------------------------------------------------------------
   patchShadowChunk({ blockerTaps: num('btaps', low ? 8 : 16), filterTaps: num('ftaps', low ? 8 : 16) });
-  patchTranslucency(num('through', 0.3));
+  patchTranslucency(num('through', 0.12));
+  patchPageBounce(num('bounce', 0.9));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.BasicShadowMap; // raw depth; the patched chunk does the PCSS filter
   renderer.toneMapping = THREE.NoToneMapping;
@@ -39,11 +38,10 @@ export function createLook({ renderer, scene, camera }) {
   key.shadow.normalBias = 0.003;
   key.shadow.camera.near = 0.1;
   key.shadow.camera.far = SHADOW_RANGE;
-  const fill = new THREE.DirectionalLight(FILL_COLOR, num('fill', 0.27));
-  const hemi = new THREE.HemisphereLight(new THREE.Color().setRGB(0.62, 0.50, 0.46),
-    new THREE.Color().setRGB(0.95, 0.72, 0.50), num('amb', 0.62));
-  const bounce = new THREE.DirectionalLight(BOUNCE_COLOR, num('bounce', 0.8));
-  scene.add(key, key.target, fill, fill.target, bounce, bounce.target, hemi);
+  const fill = new THREE.DirectionalLight(FILL_COLOR, num('fill', 0.14));
+  const hemi = new THREE.HemisphereLight(new THREE.Color().setRGB(0.47, 0.47, 0.68),
+    new THREE.Color().setRGB(0.95, 0.72, 0.50), num('amb', 0.16));
+  scene.add(key, key.target, fill, fill.target, hemi);
 
   // The page is endless, so nothing shows beyond it: a dark warm backdrop only.
   scene.background = TABLE_COLOR.clone().multiplyScalar(0.25);
@@ -88,11 +86,11 @@ export function createLook({ renderer, scene, camera }) {
     { blending: THREE.AdditiveBlending, transparent: true });
   const finalMat = pass(SH.FINAL, { tScene: U(rtScene.texture), tDepth: U(rtScene.depthTexture), tAo: U(rtAo.texture),
     tDof: U(rtDof.texture), tBloom: U(rtBloom[0].texture), lens, cocLimit, texel, aoTint,
-    exposure: U(num('exp', 1.05)), contrast: U(num('con', 1.34)), saturation: U(num('sat', 1.08)),
-    bloom: U(new THREE.Vector4(1.0, 0.72, 0.5, num('bloom', 0.14))), vignette: U(num('vig', 0.27)),
-    grain: U(num('grain', 0.022)), time: U(0), aspect: U(1), projInfo, camWorld: U(camera.matrixWorld),
+    exposure: U(num('exp', 0.70)), contrast: U(num('con', 1.34)), saturation: U(num('sat', 1.16)),
+    bloom: U(new THREE.Vector4(1.0, 0.72, 0.5, num('bloom', 0.14))), vignette: U(num('vig', 0.14)),
+    grain: U(num('grain', 0.009)), time: U(0), aspect: U(1), projInfo, camWorld: U(camera.matrixWorld),
     lantern: U(new THREE.Vector4()), pool: U(num('pool', 1.0)), aoDebug: U(num('aodbg', 0)) });
-  const lampHeight = num('lamp', 2.6); // lamp above the page; lower = tighter pool
+  const lampHeight = num('lamp', 5.0); // lamp above the page; lower = tighter pool
   const lampLead = num('lead', 1.0); // hot spot offset from the traveller toward the key, world units
   const useAo = !low && num('ao', 1) > 0;
   const dofOn = num('dof', 1) > 0;
@@ -152,8 +150,6 @@ export function createLook({ renderer, scene, camera }) {
     key.position.copy(key.target.position).addScaledVector(KEY_DIR, SHADOW_RANGE / 2);
     fill.target.position.copy(focus);
     fill.position.copy(focus).addScaledVector(FILL_DIR, 30);
-    bounce.target.position.copy(focus);
-    bounce.position.copy(focus).addScaledVector(BOUNCE_DIR, 30);
     return edgeDepth;
   }
 
@@ -173,10 +169,10 @@ export function createLook({ renderer, scene, camera }) {
     const centreDepth = dir.y < -0.05 ? ((focus.y - camera.position.y) / dir.y) * dir.dot(camZ) : focusDepth;
     const edgeDepth = fitToView(centreDepth);
     // CoC in pixels = gain * (1 - focusDepth / depth); `blur` is the uncapped CoC at the top/bottom page edge.
-    const edgeBlur = num('blur', 0.019) * size.y;
+    const edgeBlur = num('blur', 0.0215) * size.y;
     const gain = dofOn ? Math.min(edgeBlur / Math.max(edgeDepth, 0.02), size.y * 0.5) : 0;
     lens.value.set(camera.near, camera.far, focusDepth, gain);
-    cocLimit.value.set(num('band', 0.0075) * size.y, num('maxblur', 0.0085) * size.x); // cap 12 px at 1440 wide
+    cocLimit.value.set(num('band', 0.0045) * size.y, num('maxblur', 0.0125) * size.x); // cap 16 px at 1280 wide
     const tanHalf = Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
     projInfo.value.set(tanHalf * camera.aspect, tanHalf, num('aor', 0.07), num('ao', 1.0));
     finalMat.uniforms.time.value = time;

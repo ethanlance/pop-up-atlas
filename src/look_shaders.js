@@ -217,11 +217,16 @@ float hash( vec2 p ) {
   return fract( ( q.x + q.y ) * q.z );
 }
 void main() {
-  // 3x3 tent on the sharp image: merges the 2x2 interleaved shadow samples and softens like a real lens.
+  // The 3x3 tent merges the 2x2 interleaved shadow and AO samples. At a depth step (a card outline) the centre
+  // sample is kept, so outlines in the focus band stay crisp.
   vec2 h = texel * 0.5;
-  vec3 sharp = 0.25 * ( texture2D( tScene, vUv + h ).rgb + texture2D( tScene, vUv - h ).rgb
-    + texture2D( tScene, vUv + vec2( h.x, - h.y ) ).rgb + texture2D( tScene, vUv + vec2( - h.x, h.y ) ).rgb ) * aoAt( vUv );
+  vec3 tent = 0.25 * ( texture2D( tScene, vUv + h ).rgb + texture2D( tScene, vUv - h ).rgb
+    + texture2D( tScene, vUv + vec2( h.x, - h.y ) ).rgb + texture2D( tScene, vUv + vec2( - h.x, h.y ) ).rgb );
   float z = viewDepth( texture2D( tDepth, vUv ).x );
+  float zx = viewDepth( texture2D( tDepth, vUv + vec2( texel.x, 0.0 ) ).x ) + viewDepth( texture2D( tDepth, vUv - vec2( texel.x, 0.0 ) ).x );
+  float zy = viewDepth( texture2D( tDepth, vUv + vec2( 0.0, texel.y ) ).x ) + viewDepth( texture2D( tDepth, vUv - vec2( 0.0, texel.y ) ).x );
+  float step2 = max( abs( zx - 2.0 * z ), abs( zy - 2.0 * z ) ); // second difference: zero on any flat plane
+  vec3 sharp = mix( tent, texture2D( tScene, vUv ).rgb, smoothstep( 0.004, 0.014, step2 ) ) * aoAt( vUv );
   float coc = cocPx( z );
   vec4 dof = texture2D( tDof, vUv );
   float blend = smoothstep( 0.5, 2.6, max( abs( coc ), dof.a * 2.0 ) );
@@ -229,7 +234,7 @@ void main() {
   c += texture2D( tBloom, vUv ).rgb * bloom.rgb * bloom.a;
   // Lamp falloff: the key is a near lamp, so the page is brightest toward it and falls away behind the focus.
   vec3 world = ( camWorld * vec4( ( vUv * 2.0 - 1.0 ) * projInfo.xy * z, - z, 1.0 ) ).xyz - lantern.xyz;
-  float fall = clamp( lantern.w * lantern.w / dot( world, world ), 0.16, 1.15 );
+  float fall = clamp( lantern.w * lantern.w / dot( world, world ), 0.4, 1.1 );
   c = toDisplay( agx( c * exposure * mix( 1.0, fall, pool ) ) );
   vec2 q = ( vUv - 0.5 ) * vec2( 2.0, 2.0 * aspect );
   c *= 1.0 - vignette * pow( min( length( q ), 1.2 ), 2.2 );

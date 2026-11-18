@@ -465,6 +465,8 @@ class Flap:
         self.mass = mass if mass is not None else max(0.5, min(2.0, 0.5 + 2.2 * abs(area(self.outline))))
         self.tab = tab and parent is None
         self.children = []
+        self.free = 0
+        self.flip = False
         self.slab = (0.0, t)
         self.top_y = t
         self.origin = None
@@ -559,35 +561,42 @@ def finalize(flaps, tile_id=''):
     return top
 
 
-def card_mesh(outline, uv_outline, ya, yb, uvmap, core_uv, rnd, up=(0.0, 0.0, 1.0), bend=0.6, back=1.18,
-              fibre_scale=0.5):
+def card_mesh(outline, uv_outline, ya, yb, uvmap, edge_uv, rnd, up=(0.0, 0.0, 1.0), bend=0.6, back_uv=None,
+              flip=False, fibre_scale=0.5):
     """Extruded card in local XZ, slab from ya to yb along Y.
 
-    Normals lean toward `up` so that no card face shades much darker than the page.
-    Returns pos, nor, uv0, uv1, idx, col arrays. The back face (+Y) gets a lighter vertex colour.
+    The -Y face carries the print and the +Y face is plain paper (swapped when flip is set).
+    Face normals lean toward `up`. Cut-edge faces keep true normals. Returns pos, nor, uv0, uv1, idx, col arrays.
     """
     n = len(outline)
     tris = tessellate_polygon([[Vector((x, z, 0.0)) for x, z in outline]])
     pos, nor, uv0, uv1, idx, col = [], [], [], [], [], []
     ox, oz = rnd.random(), rnd.random()
     ux_, uy_, uz_ = (bend * v for v in up)
+    xs = [p[0] for p in uv_outline]
+    zs = [p[1] for p in uv_outline]
+    bx0, bx1, bz0, bz1 = min(xs), max(xs), min(zs), max(zs)
     for y, ny in ((ya, -1.0), (yb, 1.0)):
         base = len(pos)
-        c = 1.0 if ny < 0 else back
+        plain = back_uv is not None and ((ny > 0) != flip)
         for (x, z), (ux, uz) in zip(outline, uv_outline):
             pos.append((x, y, z))
             nor.append((ux_, ny + uy_, uz_))
-            uv0.append(uvmap(ux, uz))
+            if plain:
+                fu, fv = (ux - bx0) / max(bx1 - bx0, 1e-6), (uz - bz0) / max(bz1 - bz0, 1e-6)
+                uv0.append((back_uv[0] + (back_uv[2] - back_uv[0]) * fu, back_uv[1] + (back_uv[3] - back_uv[1]) * fv))
+            else:
+                uv0.append(uvmap(ux, uz))
             uv1.append((x * fibre_scale + ox, z * fibre_scale + oz))
-            col.append((c, c, c))
+            col.append((1.0, 1.0, 1.0))
         for a, b, c_ in tris:
             pa, pb, pc = outline[a], outline[b], outline[c_]
             cr = (pb[0] - pa[0]) * (pc[1] - pa[1]) - (pb[1] - pa[1]) * (pc[0] - pa[0])
             # In XZ, a counter-clockwise triangle has its normal along -Y.
-            flip = (cr > 0) != (ny < 0)
-            idx += [base + a, base + c_, base + b] if flip else [base + a, base + b, base + c_]
+            flip_w = (cr > 0) != (ny < 0)
+            idx += [base + a, base + c_, base + b] if flip_w else [base + a, base + b, base + c_]
     s = 0.0
-    cu0, cv0, cu1, cv1 = core_uv
+    cu0, cv0, cu1, cv1 = edge_uv
     for i in range(n):
         (x0, z0), (x1, z1) = outline[i], outline[(i + 1) % n]
         L = math.hypot(x1 - x0, z1 - z0)
@@ -595,13 +604,11 @@ def card_mesh(outline, uv_outline, ya, yb, uvmap, core_uv, rnd, up=(0.0, 0.0, 1.
             continue
         nx, nz = (z1 - z0) / L, -(x1 - x0) / L
         base = len(pos)
-        f0 = rnd.random() * 0.5
-        f1 = min(1.0, f0 + L / 0.4)
-        for (x, z, y, fu, fv) in ((x0, z0, ya, f0, 0.0), (x1, z1, ya, f1, 0.0), (x1, z1, yb, f1, 1.0), (x0, z0, yb, f0, 1.0)):
+        for (x, z, y, fu, fv) in ((x0, z0, ya, 0.0, 0.0), (x1, z1, ya, 1.0, 0.0), (x1, z1, yb, 1.0, 1.0), (x0, z0, yb, 0.0, 1.0)):
             pos.append((x, y, z))
-            nor.append((nx + ux_, uy_, nz + uz_))
+            nor.append((nx, 0.0, nz))
             uv0.append((cu0 + (cu1 - cu0) * fu, cv0 + (cv1 - cv0) * fv))
-            uv1.append(((s + (L if fu == f1 else 0.0)) * fibre_scale, y * fibre_scale + fv * 0.01))
+            uv1.append(((s + L * fu) * fibre_scale, y * fibre_scale + fv * 0.01))
             col.append((1.0, 1.0, 1.0))
         e1 = (x1 - x0, 0.0, z1 - z0)
         e2 = (0.0, yb - ya, 0.0)

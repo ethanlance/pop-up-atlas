@@ -252,15 +252,22 @@ def paint_base(t, n):
                 pts.append((p['x'] + v.x, p['y'] + v.y))
             c.poly(pts, mix(PAGE, OCHRE, 0.22), 1.0)
 
+    # one or two faint dotted contour lines, like a survey sheet
+    f = fnoise(n, n, 34.0, seed % 991 + 40)
+    gy, gx = np.gradient(f, c.px)
+    g = np.hypot(gx, gy) + 1e-6
+    dots = ((X * 23 + Y * 17) % 1.0) < 0.55
+    for lv in (-0.35, 0.55):
+        c.blend(c.cov(np.abs(f - lv) / g, 0.006) * dots * (psdf > 0.06) * (wsdf > 0.08) * 0.16, BROWN)
     made = 0
     for _ in range(200):
-        if made >= 6:
+        if made >= 8:
             break
         x, y = rnd.uniform(-0.82, 0.82), rnd.uniform(-0.82, 0.82)
         if not free(x, y):
             continue
         made += 1
-        _tick(c, x, y, mix(SAGE, MOSS, 0.35) if made % 3 else mix(OCHRE, PAGE, 0.3))
+        _tick(c, x, y, mix(SAGE, MOSS, 0.35) if made % 3 else OCHRE, 0.15)
 
     img = common + (c.img - common) * winb[..., None]
     win = sstep(border / 0.1)
@@ -475,8 +482,8 @@ def st_strut(c, D, o, rnd):
 
 
 def st_tab(c, D, o, rnd):
-    c.img[:] = CORE
-    c.blend(c.cov(D, 0.01) * 0.25, BROWN)
+    c.img[:] = mix(PAGE, CORE, 0.7)
+    c.blend(c.cov(D, 0.006) * 0.3, mix(BROWN, OCHRE, 0.4))
 
 
 def st_core(c, D, o, rnd):
@@ -559,6 +566,35 @@ STYLES = {
     'tab': st_tab, 'core': st_core, 'sheep': st_sheep,
     'trav_body': st_trav_body, 'trav_leg': st_trav_leg, 'trav_arm': st_trav_arm, 'trav_stand': st_trav_stand,
 }
+
+
+EDGE_BASE = hexc('#EFE6D2')
+BACK = hexc('#E8DCC0')
+STYLE_COLOR = {
+    'crown_moss': MOSS, 'crown_sage': SAGE, 'crown_terra': TERRA, 'crown_ochre': OCHRE, 'bush': SAGE, 'conifer': MOSS,
+    'hay': OCHRE, 'tuft': MOSS, 'reeds': mix(MOSS, SAGE, 0.3), 'hill_terra': TERRA, 'hill_ochre': OCHRE,
+    'hill_moss': MOSS, 'hill_sage': SAGE, 'hwall_cream': CORE, 'hwall_ochre': mix(OCHRE, CORE, 0.35), 'hwall_teal': TEAL,
+    'hroof_terra': TERRA, 'hroof_brown': BROWN, 'hroof_teal': TEAL, 'hside_cream': CORE,
+    'hside_ochre': mix(OCHRE, CORE, 0.35), 'hside_teal': TEAL, 'mill_tower': mix(CORE, OCHRE, 0.25), 'mill_sails': BROWN,
+    'arch': TERRA, 'deck': OCHRE, 'sign': BROWN, 'fence': mix(CORE, OCHRE, 0.3), 'rock_a': BROWN,
+    'rock_b': mix(BROWN, CORE, 0.3), 'sheep': CORE, 'trav_body': TERRA, 'trav_leg': BROWN, 'trav_arm': TERRA,
+    'trav_stand': CORE,
+}
+
+
+def _st_edge(style):
+    def paint(c, D, o, rnd):
+        c.img[:] = mix(EDGE_BASE, STYLE_COLOR.get(style, CORE), 0.5)
+    return paint
+
+
+def st_back(c, D, o, rnd):
+    c.img[:] = BACK
+
+
+for _k in list(STYLE_COLOR):
+    STYLES['edge_' + _k] = _st_edge(_k)
+STYLES['back'] = st_back
 
 
 def art_ppu(key, ppu):

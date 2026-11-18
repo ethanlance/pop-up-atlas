@@ -364,3 +364,82 @@
 - Still edge-on (projected / total area < 0.2): house, village, house_with_path side walls at rot 0 (box sides);
   house_with_path front at rot 1 and 3, roof and side walls at rot 2; bridge arches at rot 1.
 - Strips: tools/fold_test.mjs --strip now teleports to a clear 10-unit lane and spaces frames by 100 ms of game time.
+
+## 2026-11-18 lead — critic round 3 result and routing (final fix round)
+- Blind critic round 3: candidate 4.8 (3.2 -> 4.5 -> 4.8) vs reference 7.1; reference identified 4/4; motion 4/10.
+  Traveller readability now beats the reference. Nothing regressed overall, nothing reverted.
+- Critics contradict each other between rounds (shadows: "too periwinkle" then "too grey"; DOF: "smear, widen the band"
+  then "nearly absent, narrow the band"). DECISION: stop following per-round critic numbers for shadow colour and DOF and
+  anchor on values measured from the concept frames, splitting the difference where the frames allow.
+- USER BRIEF OVERRIDES CRITIC: round 2 critic's "never between 10 and 70 degrees for more than 150 ms" produced a rise that
+  waits 0.4 s then snaps. The brief asks for springs that overshoot and settle with a wobble, so the continuous spring rise
+  is restored and the rule dropped (this part of round 3 world work is reverted).
+- CONTRACT ADDITION: flap extras `free: 1` = free-standing card; the world keeps its orientation camera-facing at every
+  tile rotation (position rotates with the tile, hinge frame does not). Fixes leaning/edge-on cards without 45-degree hinges.
+- Capture: tools/capture.mjs steps game time exactly (main.js `?manual=1`, `__atlas.step`) — no screen-recorder download; no audio in the clip.
+
+## 2026-11-18 01:00 UTC tiles agent — round 4: glb with `free` extras is on disk
+- Every flap now has extra `free` (0 or 1). free = 1: all top-level cards except house front walls and bridge parts.
+  Free cards are authored at rot 0 with hinge along local +X (lean <= 3 degrees), print on the +Z side, foldAngle +PI/2
+  (down toward +Z). No 45-degree hinges remain. Nested flaps, house_*_front and bridge flaps have free = 0.
+- On tiles that can rotate, free cards are sized so that hinge distance from the tile centre + card height <= 1.15
+  (at most 0.15 overhang after any rotation), so those cards are short (<= about 0.5).
+- Backs are plain paper #E8DCC0, cut-edge faces are #EFE6D2 mixed 50/50 with the card colour with true side normals.
+  Because free cards fold toward the camera, a flat-folded free card shows its plain back, not its print.
+- Base mesh carries a pale glue-tab strip 0.12 deep on the +Z side of each free hinge (a square pad on rotating tiles,
+  since the base rotates with the tile and the card does not).
+- Round 4 numbers: 158 flaps, mean 256 tris per tile, max 748 (forest), glb 2.03 MB, flap art 152 px/unit.
+- Seen in the game (captures/tiles_r4_7.png): flat-folded free cards show as blank cream cut-outs, because they fold
+  toward the camera and the face that ends up on top is the plain back. To print the back again, pass back_uv=None
+  to G.card_mesh in blender/build_tiles.py (one line) and rebuild.
+- CORRECTION: mean is 259 tris per tile, not 256.
+
+## 2026-11-18 05:09 UTC tiles agent — round 4b (supersedes the round-4 fold direction)
+- Free cards now fold AWAY from the camera: foldAngle is -PI/2 (toward -Z at rot 0), so a flat card lies on its plain
+  #E8DCC0 back with the print up. Glue tab stays on the +Z side of the hinge. Nothing else about `free` changed.
+- Reach rule relaxed to hinge offset from tile centre + card height <= 1.4 (flat overhang up to 0.45 after rotation; on
+  all-grass tiles, hinge z-offset + height <= 1.4, cards are moved toward +Z instead of shrunk).
+- Trees on path/river/mixed tiles are 0.54–0.99 tall (mean 0.71): the 0.3 path margin plus the reach rule caps them.
+  Windmill is back on path_end at 0.78 tall. Page ticks are at 15 % opacity.
+
+## 2026-11-18 05:12 UTC look agent — round 4 (tuned to measurements of the concept frames)
+- Method: scratch scripts measure (a) page colour per luma bin, lit page to shadow core, (b) an edge-sharpness index per
+  horizontal strip, (c) grain std on flat bright blocks. Targets are concept_02/03/04, not critic numbers.
+- Shadows: key 47 deg elevation, dir (-0.578, 0.731, 0.361), colour (1.0, 0.83, 0.61), angular size 0.36 rad (the concept
+  lamp is 0.32-0.4). Fill 0.14, hemisphere 0.16 with sky (0.47, 0.47, 0.68): dark cores as in the concept.
+  Blocker gap = 85 % plain mean + 15 % harmonic mean. Filter also counts a caster behind the receiver plane but in front
+  of the receiver; when the sparse blocker search finds nothing, the filter still runs on a 5-texel disc (thin legs).
+  Flat-card rule: mean gap under 0.004 units casts nothing, full strength from 0.02.
+- GLOBAL PATCH 3: RE_IndirectDiffuse_Physical gets a page bounce: warm light on faces that do not point up, strongest at
+  the page, e-fold height 0.3 units. The directional bounce light is removed. Translucency 0.30 -> 0.12.
+- DOF: knee 0.45 % of height, edge CoC 2.15 % of height, cap 1.25 % of width (16 px at 1280).
+- Sharp path: the 3x3 tent is skipped at depth steps (second difference of depth), so card outlines are crisp.
+- Tone: exposure 0.70, saturation 1.16, vignette 14 %, grain sigma 0.009 (same value on R, G, B). Lamp falloff: lamp 5
+  units above the page, clamp 0.4..1.1.
+- Perf, gate command, 3 runs at load average 8-12: p95 7.4, 7.6, 7.5 ms; 25 draw calls.
+
+## 2026-11-18 05:15 UTC world agent — round 4 (continuous spring rise, closer rise line, stack order, free cards, gutter), glb of 20:16
+- Spring: the 10-70 degree dwell rule is gone. Target 1 - u^1.6 over 0.52 s, omega 16.3, zeta 0.25. Measured in the page on
+  flap_hill_3: angle every 100 ms = 0 2 12 31 52 76 98 96 87 87 92 degrees; rise 0.56 s, overshoot 11.1 %, back-swing
+  4.9 %, then 2.2 %, settled (0.5 %) at 1.30 s. Mass 0.5-2: rise 0.54-0.57 s, overshoot 10.9-11.2 %.
+- Rise line: a card starts when it is 70 % of the way from the traveller to the leading frame edge (30 % in from the edge),
+  per card, not per tile: the line sweeps over a tile. Plus 50 ms per unit sideways from the line of travel (max 0.16 s).
+  Edges that do not face the heading keep everything up; fold-down stays 1.8 units outside the frame (bottom 2.8).
+- Stack order: per drawn rotation the flat cards are layered physically (same fold direction: the card hinged further
+  back lies on top) and a card waits 45 ms after the card on top of it has started (at most 0.25 s). For hills that is
+  back layer first, front layer last when they fold toward the camera, and the reverse when they fold away; in both
+  cases no layer rises through another. The `delay` extra now only adds up to 40 ms.
+- Flat cards rest with the free edge 0.025 off the page (the fold stops short of flat by 0.025 / card height). In the
+  shadow pass flat cards are lowered 0.012 instead of 0.3, so the lifted edge can cast its thin line.
+- `free` extra honoured (129 of 158 flaps in the 20:16 glb): position turns with the tile, hinge frame and every
+  nested child keep the authored orientation; the fold direction follows the sign of foldAngle. Rotation choice only
+  scores non-free cards now. While a glb has no `free` flag at all, names matching /^flap_(tree|bush|conifer)/ are free.
+- Gutter every 6 cells: shadow valley 0.35 units wide (24 % at the fold), normals curving down over 0.7 units, a thin
+  fold line, a faint printed margin rule 0.5 units each side, and page vertices on the fold really drop 0.02.
+- Measured, 30 s auto walk: cards mid-rotation on screen median 5 (none in 9 % of samples); flaps level with or behind
+  the traveller not fully up 0.18 % in steady walking (6.3 % counting the 1.5 s after each turn, when cards that were
+  ahead of the line are suddenly beside him); cells in view changed 0 / not drawn 0; audio peak 19 per 100 ms.
+  Gate x3 at load 5: 360-363 fps, p95 3.0-3.1 ms, 25 calls, 82k tris.
+- Still edge-on: house / village / house_with_path side walls at rot 0, house_with_path front at rot 1 and 3 and roof
+  at rot 2, bridge arches at rot 1 (none of these are free). Dense forest: neighbouring trees still pass through each
+  other for a few frames while they rise (their flat footprints overlap sideways).

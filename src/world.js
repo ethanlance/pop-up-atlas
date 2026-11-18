@@ -19,20 +19,21 @@ const WIN_H = HALF_Z * 2 + 1;
 // Rise / fold region = the camera's footprint on the page (read from the camera of the last rendered frame).
 // Edges in order: bottom (nearest the camera), right, top, left. Distances in world units, positive = inside the frame.
 // Everything on screen is up, except tiles that are just coming in over the leading edge: those rise there.
-const LEAD_INSET = [-1.3, -0.3, 0.1, -0.3]; // where a tile centre starts to rise at a leading edge
-const LEAD_INSET_BAND = -2.9; // side edges, tiles level with the traveller: they rise off screen and enter the sharp band up
-const BAND_DEPTH = 1.9; // units up or down the page from the traveller that count as level with him (band + half a tile)
+const LEAD_FRACTION = 0.3; // a card starts to rise when it is this share of the traveller-to-edge distance inside a leading edge
+const TILE_REACH = 1.2; // a tile is armed when its centre is this far before the rise line (its nearest cards are then on it)
+const LATERAL_STAGGER = 0.05; // s of extra delay per unit sideways from the traveller's line of travel (about 50 ms per card)
+const COVER_WAIT_MAX = 0.25; // s a card waits at most for the cards on top of it
+const PIECE_STAGGER = 0.045; // s a card waits after the card lying on top of it has started
 const READY_MARGIN = [1.7, 0.7, 0.7, 0.7]; // tiles this far outside a non-leading edge are already up
-const FOLD_MARGIN = [2.8, 3.6, 1.8, 3.6]; // tiles fold down only this far outside the frame (bottom: tall cards lean in)
+const FOLD_MARGIN = [2.8, 1.8, 1.8, 1.8]; // tiles fold down only this far outside the frame (bottom: tall cards lean in)
 const DEFAULT_RIG = { pitch: 55, distance: 7.5, fov: 28, aspect: 1.6, lookAhead: 1.1 }; // used until a frame has rendered
 const CAM_OFF_TARGET = 4; // units between footprint centre and traveller beyond which the camera is still travelling
 const INSTANT_FRAMES = 3; // after a start or teleport tiles snap to their pose instead of animating
 const HEADING_TAU = 0.45; // s, low-pass on the heading so the leading edge changes smoothly
 const TELEPORT_DIST = 3; // units in one frame
 
-const RIPPLE_PER_CELL = 0.075; // s of extra rise delay per cell sideways from the traveller's line of travel
-const TILE_JITTER = 0.05; // s, per-tile random delay so a row does not pop in unison
-const INTRA_RISE = 0.22; // s spanned by the `delay` extra inside one tile
+const PIECE_JITTER = 0.02; // s, per-card random delay
+const INTRA_RISE = 0.04; // s spanned by the `delay` extra inside one tile (the wave and the stack order do the rest)
 const INTRA_FALL = 0.16;
 const NEST_LAG = 0.07; // s a nested flap starts after its parent
 const RISE_RATE = 160; // flap starts per second (token bucket): keeps audio under 28 starts per 100 ms
@@ -44,7 +45,16 @@ const BASE_TOP = 0.004;
 const LAYER_STEP = 0.004; // vertical spacing between stacked flat flaps (no z-fighting)
 const WALK_MARGIN = 0.12;
 const GUTTER_EVERY = 6; // cells between book gutters (valley creases along z, on a cell edge)
+const GUTTER_WIDTH = 0.35; // units, width of the soft shadow valley
+const GUTTER_SHADE = 0.24; // darkest point of the valley (share of the page colour)
+const GUTTER_CURVE = 0.7; // units from the fold over which the page curves down (normals)
+const GUTTER_SLOPE = 0.34; // normal tilt at the steepest point
+const GUTTER_DROP = 0.02; // units the page really drops at the fold
+const GUTTER_RULE = 0.5; // units from the fold to the faint printed margin rule
 const CAM_DIR = [0, -Math.sin(55 * Math.PI / 180), -Math.cos(55 * Math.PI / 180)]; // fixed camera view direction
+const REST_EDGE = 0.025; // a flat card rests with its free edge this far off the page, so it reads as card, not print
+const FREE_FALLBACK = /^flap_(tree|bush|conifer)/; // treated as `free` cards while the glb carries no `free` extra
+const SHADOW_SINK = 0.012; // units a flat card is lowered in the shadow pass: body under the bias, lifted edge still casts
 const SHADOW_FLAT = 0.91; // fold fraction above which a card casts no shadow (within about 8 degrees of flat)
 const SHADOW_FULL = 0.72; // ... and below which it casts its full shadow
 const PAGE_SIZE = 480;
@@ -78,6 +88,10 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   let geometries = 0;
   const seenGeom = new Set();
 
+  let anyFree = false;
+  gltf?.scene?.traverse((o) => { if (o.userData?.free) anyFree = true; });
+  if (gltf?.scene && !anyFree) console.info('world: glb has no `free` flaps yet, using the name fallback', String(FREE_FALLBACK));
+
   function collect(node, parent, depth, pieces) {
     for (const child of node.children) {
       child.updateMatrix();
@@ -90,6 +104,8 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         fa: isFlap && !isBase ? Number(ud.foldAngle ?? 0) || 0 : 0,
         delay: THREE.MathUtils.clamp(Number(ud.delay ?? 0.5) || 0, 0, 1),
         mass: Number(ud.mass ?? 1) || 1,
+        free: isFlap && (anyFree ? !!ud.free : depth === 0 && FREE_FALLBACK.test(child.name)),
+        freeRoot: -1, restEps: 0, drv: -1,
         moves: false, lift: 0, layer: 0, size: 1, px: 0, pz: 0,
         vOff: 0, vCount: 0, pos: null, nrm: null, hasMesh: false, hinge: null, folds: null,
       };
@@ -101,6 +117,9 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       } else if (g) console.warn('world: mesh skipped (needs position, normal, uv and an index):', child.name);
       piece.moves = piece.fa !== 0 || (parent >= 0 && pieces[parent].moves);
       pieces.push(piece);
+      const me = pieces.length - 1;
+      piece.freeRoot = parent >= 0 && pieces[parent].freeRoot >= 0 ? pieces[parent].freeRoot : piece.free ? me : -1;
+      piece.drv = piece.fa !== 0 ? me : parent >= 0 ? pieces[parent].drv : -1; // the fold that moves it
       collect(child, pieces.length - 1, depth + 1, pieces);
     }
   }
@@ -126,7 +145,6 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       const proto = { pieces, vCount, indices: new Uint32Array(iCount), uv4: new Float32Array(vCount * 4), up: new Float32Array(vCount * 6),
         col: new Float32Array(vCount * 4).fill(1) };
       let io = 0;
-      const rects = [];
       pieces.forEach((p, i) => {
         // Rest (up) and flat chains in tile-local space.
         const up = new THREE.Matrix4().copy(p.local);
@@ -151,24 +169,15 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         }
         for (let k = 0; k < g.index.count; k++) proto.indices[io++] = g.index.getX(k) + p.vOff;
 
-        // Stacking layer: overlapping flat flaps never share a plane. The lift puts the flat top face at its layer height.
         if (p.moves) {
           if (!g.boundingBox) g.computeBoundingBox();
-          const bb = g.boundingBox;
-          p.size = THREE.MathUtils.clamp(bb.getSize(v).length() * 1.2, 0.3, 3);
-          box.makeEmpty();
-          for (let c = 0; c < 8; c++) {
-            v.set(c & 1 ? bb.max.x : bb.min.x, c & 2 ? bb.max.y : bb.min.y, c & 4 ? bb.max.z : bb.min.z).applyMatrix4(flat);
-            box.expandByPoint(v);
-          }
-          let layer = 1;
-          for (const r of rects) {
-            if (r.x0 < box.max.x && r.x1 > box.min.x && r.z0 < box.max.z && r.z1 > box.min.z && r.layer >= layer) layer = r.layer + 1;
-          }
-          rects.push({ x0: box.min.x, x1: box.max.x, z0: box.min.z, z1: box.max.z, layer });
-          p.lift = BASE_TOP + layer * LAYER_STEP - box.max.y;
-          p.layer = layer;
+          p.size = THREE.MathUtils.clamp(g.boundingBox.getSize(v).length() * 1.2, 0.3, 3);
+          // A top-level card never lies quite flat: its free edge rests REST_EDGE off the page.
+          const tall = g.boundingBox.max.y;
+          if (p.fa !== 0 && p.drv === i && (p.parent < 0 || pieces[p.parent].drv < 0) && tall > 0.1) p.restEps = Math.min(0.05, REST_EDGE / (tall * Math.abs(p.fa)));
         }
+        p.flatM = flat;
+        p.upM = up;
 
         // Popped pose baked in tile-local space (position, normal interleaved).
         n3.setFromMatrix4(up);
@@ -187,7 +196,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
           if (pieces[q].fa === 0) continue;
           if (level === MAX_FOLDS) { console.warn(`world: more than ${MAX_FOLDS} nested folds, outer ones ignored for`, p.name); break; }
           const e = chain[q].up.elements;
-          v.set(e[0], e[1], e[2]).normalize().multiplyScalar(pieces[q].fa);
+          v.set(e[0], e[1], e[2]).normalize().multiplyScalar(pieces[q].fa * (1 - pieces[q].restEps));
           p.hinge.set([e[12], e[13], e[14], v.x, v.y, v.z], level * 6);
           p.folds[level] = q;
           level++;
@@ -214,6 +223,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
           }
         }
         p.area = total;
+        if (p.freeRoot >= 0) p.facing[1] = p.facing[2] = p.facing[3] = p.facing[0]; // free cards do not turn with the tile
         for (let r = 0; r < 4; r++) proto.facing[r] += p.facing[r];
       }
       // Walkable deck (bridge): height field of the up-facing triangles of pieces named *deck*, in the popped pose.
@@ -245,6 +255,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         proto.hGrid = grid;
         proto.deck = deck.filter((q) => q.fa !== 0).map((q) => pieces.indexOf(q));
       }
+      proto.rotv = [null, null, null, null];
       protos.set(root.name.slice(5), proto);
       if (vCount > VCAP) VCAP = vCount;
       if (iCount > ICAP) ICAP = iCount;
@@ -283,6 +294,64 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     }
     defs.set(t.id, { blocked: !!t.blocked, obs, canon });
   }
+  // Per drawn rotation of a tile: where each piece sits, how the flat cards stack, and which card must start first.
+  // Free cards keep their authored (camera-facing) frame: only their position turns with the tile.
+  function variant(proto, rot) {
+    if (proto.rotv[rot]) return proto.rotv[rot];
+    const pieces = proto.pieces, n = pieces.length;
+    const c = rot === 0 ? 1 : rot === 2 ? -1 : 0, s = rot === 1 ? -1 : rot === 3 ? 1 : 0;
+    const tf = new Float32Array(n * 4), pos = new Float32Array(n * 2), lift = new Float32Array(n), layer = new Int8Array(n);
+    const above = pieces.map(() => []);
+    const rects = [], edges = [];
+    const v = new THREE.Vector3();
+    for (let i = 0; i < n; i++) {
+      const p = pieces[i];
+      let cc = c, ss = s, ox = 0, oz = 0;
+      if (p.freeRoot >= 0) {
+        const r = pieces[p.freeRoot];
+        cc = 1; ss = 0; ox = c * r.px + s * r.pz - r.px; oz = c * r.pz - s * r.px - r.pz;
+      }
+      tf[i * 4] = cc; tf[i * 4 + 1] = ss; tf[i * 4 + 2] = ox; tf[i * 4 + 3] = oz;
+      pos[i * 2] = cc * p.px + ss * p.pz + ox; pos[i * 2 + 1] = cc * p.pz - ss * p.px + oz;
+      if (!p.hasMesh || !p.moves) continue;
+      const bb = p.geometry.boundingBox;
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity, top = -Infinity;
+      for (let k = 0; k < 8; k++) {
+        v.set(k & 1 ? bb.max.x : bb.min.x, k & 2 ? bb.max.y : bb.min.y, k & 4 ? bb.max.z : bb.min.z).applyMatrix4(p.flatM);
+        const x = cc * v.x + ss * v.z + ox, z = cc * v.z - ss * v.x + oz;
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); top = Math.max(top, v.y);
+      }
+      const d = pieces[p.drv];
+      const hx = pos[p.drv * 2], hz = pos[p.drv * 2 + 1]; // (driver comes before its children, so pos is set)
+      let dx = (x0 + x1) / 2 - hx, dz = (z0 + z1) / 2 - hz;
+      const dl = Math.hypot(dx, dz) || 1;
+      dx /= dl; dz /= dl;
+      rects.push({ i, x0, x1, z0, z1, top, dx, dz, hx, hz, simple: d.parent < 0 || pieces[d.parent].drv < 0 });
+      layer[i] = 1;
+    }
+    // Which of two overlapping flat cards is on top: for cards that fold the same way, the one hinged further back.
+    for (let a = 0; a < rects.length; a++) {
+      for (let b = a + 1; b < rects.length; b++) {
+        const A = rects[a], B = rects[b];
+        if (!(A.x0 < B.x1 && A.x1 > B.x0 && A.z0 < B.z1 && A.z1 > B.z0)) continue;
+        let topIsA = false;
+        if (A.simple && B.simple && A.dx * B.dx + A.dz * B.dz > 0.5) topIsA = A.hx * A.dx + A.hz * A.dz < B.hx * A.dx + B.hz * A.dz - 1e-4;
+        edges.push(topIsA ? [B.i, A.i] : [A.i, B.i]); // [below, top]
+      }
+    }
+    for (let pass = 0; pass < rects.length; pass++) {
+      let changed = false;
+      for (const [lo, hi] of edges) if (layer[hi] < layer[lo] + 1 && layer[lo] < 14) { layer[hi] = layer[lo] + 1; changed = true; }
+      if (!changed) break;
+    }
+    for (const r of rects) lift[r.i] = BASE_TOP + layer[r.i] * LAYER_STEP - r.top;
+    for (const [lo, hi] of edges) {
+      const dl = pieces[lo].drv, dh = pieces[hi].drv;
+      if (dl !== dh && layer[hi] > layer[lo] && !above[dl].includes(dh)) above[dl].push(dh);
+    }
+    return (proto.rotv[rot] = { tf, pos, lift, layer, above });
+  }
+
   function tileRot(t) { const d = defs.get(t.id); return d ? d.canon[t.rot & 3] : t.rot & 3; }
 
   // ------------------------------------------------------------------------------------------------ the one mesh
@@ -362,21 +431,38 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       #ifdef POP_SHADOW
         // Shadow pass only: a flat or nearly flat card sinks under the page, so it casts no streak; the shadow
         // grows from nothing as the card lifts.
-        if (fold.y > -0.5) p.y -= 0.3 * smoothstep(${SHADOW_FULL.toFixed(2)}, ${SHADOW_FLAT.toFixed(2)}, f);
+        if (fold.y > -0.5) p.y -= ${SHADOW_SINK.toFixed(3)} * smoothstep(${SHADOW_FULL.toFixed(2)}, ${SHADOW_FLAT.toFixed(2)}, f);
       #endif
     }
   `;
+  // Real geometry too: page vertices that sit on the gutter line (tile edges) dip a little, so the page runs down into it.
+  const GUTTER_DIP = /* glsl */`
+    if ( fold.y < -0.5 && transformed.y < 0.01 ) {
+      float gv = mod( transformed.x + ${(CELL / 2).toFixed(1)} + ${(GUTTER_EVERY * CELL / 2).toFixed(1)}, ${(GUTTER_EVERY * CELL).toFixed(1)} ) - ${(GUTTER_EVERY * CELL / 2).toFixed(1)};
+      if ( abs( gv ) < 0.02 ) transformed.y -= ${GUTTER_DROP.toFixed(3)};
+    }
+  `;
+  const GUTTER_PERIOD = (GUTTER_EVERY * CELL).toFixed(1), GUTTER_SHIFT = (CELL / 2).toFixed(1);
   const GUTTER_PARS = /* glsl */`
     varying vec3 popW;
     // x = signed distance to the nearest gutter line, y = 1 on the page surface fading to 0 above it.
     vec2 popGutter() {
-      float period = ${(GUTTER_EVERY * CELL).toFixed(1)};
-      float gx = mod( popW.x + ${(CELL / 2).toFixed(1)} + period * 0.5, period ) - period * 0.5;
+      float period = ${GUTTER_PERIOD};
+      float gx = mod( popW.x + ${GUTTER_SHIFT} + period * 0.5, period ) - period * 0.5;
       return vec2( gx, 1.0 - smoothstep( 0.03, 0.10, popW.y ) );
     }
+    // Slope of the page into the gutter: 0 far away, steepest about 0.15 units from the fold.
     float popValley( float gx ) {
-      float w = 1.0 - smoothstep( 0.0, 0.4, abs( gx ) );
-      return w * w;
+      float a = abs( gx );
+      return smoothstep( 0.0, 0.12, a ) * ( 1.0 - smoothstep( 0.12, ${GUTTER_CURVE.toFixed(2)}, a ) );
+    }
+    // Darkening: soft shadow valley, thin fold line, and a faint printed margin rule on each side.
+    float popGutterInk( float gx ) {
+      float a = abs( gx );
+      float valley = ${GUTTER_SHADE.toFixed(2)} * exp( - gx * gx / ${(GUTTER_WIDTH * GUTTER_WIDTH / 9).toFixed(4)} );
+      float fold = 0.30 * exp( - gx * gx / 0.00012 );
+      float rule = 0.13 * exp( - ( a - ${GUTTER_RULE.toFixed(2)} ) * ( a - ${GUTTER_RULE.toFixed(2)} ) / 0.00010 );
+      return valley + fold + rule;
     }
   `;
   function patchMaterial(material) {
@@ -386,12 +472,12 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', '#include <common>\n' + POP_PARS)
         .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n{ vec3 popP = position; popApply(popP, objectNormal); }')
-        .replace('#include <begin_vertex>', '#include <begin_vertex>\n{ vec3 popN = vec3(0.0, 1.0, 0.0); popApply(transformed, popN); }\npopW = transformed;');
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\n{ vec3 popN = vec3(0.0, 1.0, 0.0); popApply(transformed, popN); }\npopW = transformed;\n' + GUTTER_DIP);
       // Book gutter: a lit valley crease in the page every GUTTER_EVERY cells (normal tilt + a thin dark fold line).
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', '#include <common>\n' + GUTTER_PARS)
-        .replace('#include <map_fragment>', '#include <map_fragment>\n{ vec2 pg = popGutter(); diffuseColor.rgb *= 1.0 - pg.y * ( 0.26 * exp( - pg.x * pg.x / 0.0012 ) + 0.05 * popValley( pg.x ) ); }')
-        .replace('#include <normal_fragment_maps>', '#include <normal_fragment_maps>\n{ vec2 pg = popGutter(); vec3 gx = normalize( ( viewMatrix * vec4( 1.0, 0.0, 0.0, 0.0 ) ).xyz ); normal = normalize( normal - gx * sign( pg.x ) * 0.38 * pg.y * popValley( pg.x ) ); }');
+        .replace('#include <map_fragment>', '#include <map_fragment>\n{ vec2 pg = popGutter(); diffuseColor.rgb *= 1.0 - pg.y * popGutterInk( pg.x ); }')
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n{ vec2 pg = popGutter(); vec3 gx = normalize( ( viewMatrix * vec4( 1.0, 0.0, 0.0, 0.0 ) ).xyz ); normal = normalize( normal - gx * sign( pg.x ) * ${GUTTER_SLOPE.toFixed(2)} * pg.y * popValley( pg.x ) ); }`);
     };
     material.customProgramCacheKey = () => `popup-${STRIDE}-${ACTIVE_MAX}`;
     return material;
@@ -500,6 +586,8 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   const timer = new Float32Array(NPIECE);
 
   const slotIdxStart = new Int32Array(NSLOT).fill(-1); // where the slot's triangles sit in the index buffer
+  const slotVar = new Array(NSLOT).fill(null); // rotation variant of the slot's tile
+  const started = new Float32Array(NPIECE).fill(-1e9); // sim time a flap last started to rise
   const slotBlock = new Int16Array(NSLOT).fill(-1); // live block of an active slot
   const freeBlocks = new Int16Array(ACTIVE_MAX);
   let nFree = ACTIVE_MAX;
@@ -521,7 +609,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   let flapsMoving = 0;
   let acc = 0;
   let simTime = 0;
-  let started = false;
+  let begun = false;
   let winCx = 0x7fffffff, winCz = 0x7fffffff;
   let lastFx = 0, lastFz = 0;
   let hx = 0, hz = -1; // smoothed heading (not normalised)
@@ -532,7 +620,8 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   const camWorld = new THREE.Matrix4(), camProjInv = new THREE.Matrix4();
   const rigCam = new THREE.PerspectiveCamera(DEFAULT_RIG.fov, DEFAULT_RIG.aspect, 0.5, 200);
   const fpx = new Float32Array(4), fpz = new Float32Array(4); // footprint corners: bottom-left, bottom-right, top-right, top-left
-  const enx = new Float32Array(4), enz = new Float32Array(4), eInset = new Float32Array(4), eLead = new Float32Array(4); // edge outward normals, rise insets
+  const enx = new Float32Array(4), enz = new Float32Array(4), eInset = new Float32Array(4), eLead = new Float32Array(4), eLine = new Float32Array(4);
+  let walkSpeed = 2.2, frameUx = 0, frameUz = -1; // edge outward normals, rise insets
   const cv3 = new THREE.Vector3();
   const NDC = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
 
@@ -577,6 +666,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       if (m === Fold.RISING || m === Fold.FALLING) flapsMoving--;
       Fold.initFlap(pool, off + i, proto.pieces[i].mass, up);
       pend[off + i] = PEND_NONE;
+      started[off + i] = -1e9;
     }
     if (slotBlock[slot] >= 0) { freeBlocks[nFree++] = slotBlock[slot]; slotBlock[slot] = -1; }
     tileState[slot] = up ? 0 : 1;
@@ -610,22 +700,23 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     if (!proto) return;
     const pieces = proto.pieces;
     for (let i = 0; i < pieces.length; i++) Fold.initFlap(pool, off + i, pieces[i].mass, false);
-    // Tile-local -> world is a quarter-turn about Y (rotation.y = -rot * PI/2) plus a translation.
-    const c = rot === 0 ? 1 : rot === 2 ? -1 : 0;
-    const s = rot === 1 ? -1 : rot === 3 ? 1 : 0;
-    const tx = cx * CELL, tz = cz * CELL;
+    // Tile-local -> world is a quarter-turn about Y (rotation.y = -rot * PI/2) plus a translation (per piece: free cards).
+    const vr = variant(proto, rot);
+    slotVar[slot] = vr;
     const src = proto.up, uv = proto.uv4, col = proto.col;
     let o = slot * VCAP * VS;
     for (let i = 0; i < pieces.length; i++) {
       const p = pieces[i];
+      started[off + i] = -1e9;
       if (!p.hasMesh) continue;
       const h = p.hinge;
+      const c = vr.tf[i * 4], s = vr.tf[i * 4 + 1], tx = vr.tf[i * 4 + 2] + cx * CELL, tz = vr.tf[i * 4 + 3] + cz * CELL;
       for (let l = 0; l < MAX_FOLDS; l++) { // hinges of this piece, turned into world space
         const b = l * 6;
         hw[b] = c * h[b] + s * h[b + 2] + tx; hw[b + 1] = h[b + 1]; hw[b + 2] = c * h[b + 2] - s * h[b] + tz;
         hw[b + 3] = c * h[b + 3] + s * h[b + 5]; hw[b + 4] = h[b + 4]; hw[b + 5] = c * h[b + 5] - s * h[b + 3];
       }
-      const lift = p.moves ? p.lift : 0;
+      const lift = vr.lift[i];
       const f0 = p.folds[0], f1 = p.folds[1], f2 = p.folds[2];
       for (let k = p.vOff, e = p.vOff + p.vCount; k < e; k++) {
         const a = k * 6, u = k * 4;
@@ -683,14 +774,26 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     if (!proto) return;
     const off = slot * STRIDE;
     const pieces = proto.pieces;
-    const jitter = hash2(slotCx[slot], slotCz[slot]);
-    const base = up ? jitter * TILE_JITTER + Math.min(0.15, dist * RIPPLE_PER_CELL) : jitter * 0.05;
+    const pos = slotVar[slot].pos, bx = slotCx[slot] * CELL, bz = slotCz[slot] * CELL;
     let any = false;
     for (let i = 0; i < pieces.length; i++) {
       const p = pieces[i];
       if (p.fa === 0) continue;
-      let t = base + (up ? p.delay * INTRA_RISE : (1 - p.delay) * INTRA_FALL);
-      if (up && p.parent >= 0 && pieces[p.parent].fa !== 0 && t < timer[off + p.parent] + NEST_LAG) t = timer[off + p.parent] + NEST_LAG;
+      let t;
+      if (up) {
+        // The rise line sweeps over the tile: each card starts as the line reaches its own hinge, later the further
+        // it is to the side of the traveller's line of travel.
+        const wx = bx + pos[i * 2], wz = bz + pos[i * 2 + 1];
+        t = 0;
+        for (let e = 0; e < 4; e++) {
+          if (eLead[e] <= 0.5) continue;
+          const short = eLine[e] + (wx - fpx[e]) * enx[e] + (wz - fpz[e]) * enz[e]; // distance still to go to the line
+          if (short > 0) t = Math.max(t, short / (walkSpeed * Math.max(0.4, enx[e] * frameUx + enz[e] * frameUz)));
+        }
+        t = Math.min(1.5, t) + Math.min(0.16, Math.abs((wx - lastFx) * frameUz - (wz - lastFz) * frameUx) * LATERAL_STAGGER);
+        t += hash2(slotCx[slot] * 7 + i, slotCz[slot] * 13 - i) * PIECE_JITTER + p.delay * INTRA_RISE;
+        if (p.parent >= 0 && pieces[p.parent].drv >= 0 && t < timer[off + pieces[p.parent].drv] + NEST_LAG) t = timer[off + pieces[p.parent].drv] + NEST_LAG;
+      } else t = hash2(slotCx[slot], slotCz[slot]) * 0.05 + (1 - p.delay) * INTRA_FALL;
       pend[off + i] = up ? PEND_RISE : PEND_FALL;
       timer[off + i] = t;
       any = true;
@@ -698,19 +801,16 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     if (any) activate(slot);
   }
 
-  function emitFlap(slot, p, intensity) {
+  function emitFlap(slot, p, i, intensity) {
     dbg.audioCalls++;
     if (intensity > 0.9) dbg.audioRise++; else dbg.audioLand++;
     if (simTime - dbg.winStart >= 0.1) { dbg.winStart = simTime; dbg.winCount = 0; }
     if (++dbg.winCount > dbg.maxPer100ms) dbg.maxPer100ms = dbg.winCount;
     if (!audio?.flap) return;
-    const rot = slotRot[slot];
-    let x = p.px, z = p.pz;
-    for (let r = 0; r < rot; r++) { const nx = -z; z = x; x = nx; }
     flapMsg.size = p.size;
     flapMsg.intensity = intensity;
-    flapMsg.x = slotCx[slot] * CELL + x;
-    flapMsg.z = slotCz[slot] * CELL + z;
+    flapMsg.x = slotCx[slot] * CELL + slotVar[slot].pos[i * 2];
+    flapMsg.z = slotCz[slot] * CELL + slotVar[slot].pos[i * 2 + 1];
     audio.flap(flapMsg);
   }
 
@@ -749,6 +849,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       if (ACTIVE_MAX - nFree > dbg.blocksMax) dbg.blocksMax = ACTIVE_MAX - nFree;
     }
     const live = blk * STRIDE;
+    const above = slotVar[slot].above;
     let busy = false, firstRise = false;
     for (let i = 0; i < pieces.length; i++) {
       const p = pieces[i];
@@ -761,14 +862,24 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         const before = pool.mode[id];
         // A flap in motion always finishes first: no reversal mid-swing.
         const inMotion = before === Fold.RISING || before === Fold.FALLING;
-        if (timer[id] <= 0 && !parentWaits && !inMotion && (rising ? riseTokens : fallTokens) >= 1) {
+        // A card under another flat card waits until the upper one is on its way (no card rises through another).
+        let covered = false;
+        if (rising && timer[id] <= 0 && timer[id] > -COVER_WAIT_MAX) { // never wait for ever: stack orders can be circular
+          const ab = above[i];
+          for (let k = 0; k < ab.length; k++) {
+            const a = off + ab[k];
+            if (pend[a] === PEND_RISE || (pool.mode[a] === Fold.RISING && simTime - started[a] < PIECE_STAGGER)) { covered = true; break; }
+          }
+        }
+        if (timer[id] <= 0 && !parentWaits && !inMotion && !covered && (rising ? riseTokens : fallTokens) >= 1) {
           if (rising && before === Fold.FLAT) {
             riseTokens--;
             Fold.startRise(pool, id);
+            started[id] = simTime;
             flapsMoving++;
             firstRise = true;
-            emitFlap(slot, p, 1);
-            if (trace && trace.id < 0 && p.mass >= trace.minMass && p.mass <= trace.maxMass &&
+            emitFlap(slot, p, i, 1);
+            if (trace && trace.id < 0 && p.mass >= trace.minMass && p.mass <= trace.maxMass && (!trace.match || trace.match.test(p.name)) &&
                 Math.hypot(slotCx[slot] * CELL - lastFx, slotCz[slot] * CELL - lastFz) <= trace.maxDist) {
               trace.id = id; trace.mass = p.mass; trace.name = p.name; trace.fa = p.fa;
               trace.t0 = simTime - elapsed; // this frame's substeps are part of the rise
@@ -787,7 +898,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         for (let k = 0; k < nSub; k++) {
           const ev = Fold.step(pool, id, Fold.SUBSTEP);
           if (ev === Fold.EV_NONE) continue;
-          if (ev === Fold.EV_LANDED) emitFlap(slot, p, 0.4);
+          if (ev === Fold.EV_LANDED) emitFlap(slot, p, i, 0.4);
           if (pool.mode[id] === Fold.UP || pool.mode[id] === Fold.FLAT) { flapsMoving--; break; }
         }
         const x = pool.x[id];
@@ -822,7 +933,8 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   function update(dt, focus, heading) {
     if (!ready) return;
     const fx = focus.x, fz = focus.z;
-    const jumped = !started || Math.hypot(fx - lastFx, fz - lastFz) > TELEPORT_DIST;
+    const moved = Math.hypot(fx - lastFx, fz - lastFz);
+    const jumped = !begun || moved > TELEPORT_DIST;
     lastFx = fx; lastFz = fz;
     // Ranges still queued mean the mesh was not drawn last frame: keep them, or fall back to one full upload.
     if (vb.updateRanges.length === 0) nVbRange = 0;
@@ -831,12 +943,12 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
     // Heading low-pass. Its length drops through a reversal, which shrinks the forward reach instead of flipping it.
     const hl = heading ? Math.hypot(heading.x, heading.z) : 0;
     if (hl > 0.1) {
-      const k = started ? 1 - Math.exp(-dt / HEADING_TAU) : 1;
+      const k = begun ? 1 - Math.exp(-dt / HEADING_TAU) : 1;
       hx += (heading.x / hl - hx) * k;
       hz += (heading.z / hl - hz) * k;
     }
     if (jumped) instantFrames = INSTANT_FRAMES;
-    started = true;
+    begun = true;
 
     // Window of tiles around the focus.
     const fcx = Math.round(fx / CELL), fcz = Math.round(fz / CELL);
@@ -867,20 +979,24 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       defaultFootprint(fx, fz, ux, uz);
       if (instantFrames < 1) instantFrames = 1;
     }
+    // Walking speed of the focus (smoothed), for the wave timing.
+    if (dt > 0 && !jumped) walkSpeed += (Math.min(3, moved / dt) - walkSpeed) * (1 - Math.exp(-dt / 0.25));
+    if (walkSpeed < 1.2) walkSpeed = 1.2;
+    frameUx = ux; frameUz = uz;
     for (let e = 0; e < 4; e++) {
       const lead = Math.min(1, Math.max(0, (enx[e] * ux + enz[e] * uz - 0.2) / 0.3)) * Math.min(1, hlen * 2);
       eLead[e] = lead;
-      eInset[e] = -READY_MARGIN[e] + (LEAD_INSET[e] + READY_MARGIN[e]) * lead;
+      // Rise line of a leading edge: LEAD_FRACTION of the way back from the edge towards the traveller.
+      const reach = -((fx - fpx[e]) * enx[e] + (fz - fpz[e]) * enz[e]);
+      eLine[e] = Math.max(0.2, reach * LEAD_FRACTION);
+      eInset[e] = -READY_MARGIN[e] + (eLine[e] - TILE_REACH + READY_MARGIN[e]) * lead;
     }
-    const bandSide1 = -READY_MARGIN[1] + (LEAD_INSET_BAND + READY_MARGIN[1]) * eLead[1];
-    const bandSide3 = -READY_MARGIN[3] + (LEAD_INSET_BAND + READY_MARGIN[3]) * eLead[3];
     for (let slot = 0; slot < NSLOT; slot++) {
       const px = slotCx[slot] * CELL, pz = slotCz[slot] * CELL;
       let wantUp = true, wantDown = false;
-      const level = Math.abs((px - fx) * enx[2] + (pz - fz) * enz[2]) < BAND_DEPTH; // level with the traveller on screen
       for (let e = 0; e < 4; e++) {
         const inside = -((px - fpx[e]) * enx[e] + (pz - fpz[e]) * enz[e]);
-        if (inside < (level && e === 1 ? bandSide1 : level && e === 3 ? bandSide3 : eInset[e])) wantUp = false;
+        if (inside < eInset[e]) wantUp = false;
         if (inside < -FOLD_MARGIN[e]) wantDown = true;
       }
       if (instantFrames > 0) {
@@ -888,7 +1004,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
         else if (wantDown && slotUp[slot]) setTileInstant(slot, false);
       } else if (slotUp[slot]) {
         if (wantDown) trigger(slot, false, 0);
-      } else if (wantUp) trigger(slot, true, Math.abs((px - fx) * uz - (pz - fz) * ux) / CELL);
+      } else if (wantUp) trigger(slot, true, 0);
     }
     if (instantFrames > 0) instantFrames--;
 
@@ -972,8 +1088,8 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
 
   // ------------------------------------------------------------------------------------------------ debug (tests)
   /** Arm a recorder: the next flap that starts rising from flat with mass in [minMass, maxMass] is sampled every frame. */
-  function debugFlapTrace({ minMass = 0, maxMass = 9, duration = 2.2, maxDist = 1e9 } = {}) {
-    trace = { id: -1, t0: 0, minMass, maxMass, duration, maxDist, samples: [], done: false, mass: 0, name: '', fa: 0 };
+  function debugFlapTrace({ minMass = 0, maxMass = 9, duration = 2.2, maxDist = 1e9, name = '' } = {}) {
+    trace = { id: -1, t0: 0, minMass, maxMass, duration, maxDist, match: name ? new RegExp(name) : null, samples: [], done: false, mass: 0, name: '', fa: 0 };
   }
   function debugTraceResult() {
     return trace ? { done: trace.done, started: trace.id >= 0, mass: trace.mass, name: trace.name, foldAngle: trace.fa, samples: trace.samples } : null;
@@ -1014,9 +1130,10 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
   function debugTile(cx, cz) {
     const t = wfc.get(cx, cz), slot = mod(cx, WIN_W) + mod(cz, WIN_H) * WIN_W;
     const inWin = slotCx[slot] === cx && slotCz[slot] === cz;
-    return { id: t.id, rot: t.rot, drawnRot: tileRot(t), inWindow: inWin, up: inWin ? !!slotUp[slot] : false,
+    return { id: t.id, rot: t.rot, drawnRot: tileRot(t), inWindow: inWin, up: inWin ? !!slotUp[slot] : false, walkSpeed, active: !!slotActive[slot], block: slotBlock[slot],
+      timers: inWin && slotProto[slot] ? Array.from(timer.subarray(slot * STRIDE, slot * STRIDE + slotProto[slot].pieces.length)).map((v, k) => pend[slot * STRIDE + k] ? +v.toFixed(2) : null) : [],
       x: inWin && slotProto[slot] ? Array.from(pool.x.subarray(slot * STRIDE, slot * STRIDE + slotProto[slot].pieces.length)) : [],
-      pieces: inWin && slotProto[slot] ? slotProto[slot].pieces.map((p) => ({ name: p.name, fa: p.fa, mass: p.mass, size: p.size, layer: p.layer, lift: p.lift, parent: p.parent })) : [] };
+      pieces: inWin && slotProto[slot] ? slotProto[slot].pieces.map((p) => ({ name: p.name, fa: p.fa, mass: p.mass, size: p.size, free: p.freeRoot >= 0, layer: slotVar[slot].layer[slotProto[slot].pieces.indexOf(p)], parent: p.parent })) : [] };
   }
   /**
    * Is cell (cx, cz) really in the draw data right now? Checks the slot, its base vertices (inside the cell), its
@@ -1057,8 +1174,7 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
       for (let i = 0; i < proto.pieces.length; i++) {
         const p = proto.pieces[i], id = slot * STRIDE + i, m = pool.mode[id], x = pool.x[id];
         if (p.fa === 0 || !p.hasMesh || p.size < minSize || !(m === Fold.RISING || m === Fold.FALLING) || x < 0.1 || x > 0.9) continue;
-        let px = p.px, pz = p.pz;
-        for (let r = 0; r < slotRot[slot]; r++) { const nx = -pz; pz = px; px = nx; }
+        const px = slotVar[slot].pos[i * 2], pz = slotVar[slot].pos[i * 2 + 1];
         dv.set(slotCx[slot] * CELL + px, 0.2, slotCz[slot] * CELL + pz).project(camera);
         if (Math.abs(dv.x) > 0.96 || Math.abs(dv.y) > 0.96) continue;
         inFrame++;
@@ -1073,23 +1189,25 @@ export function createWorld({ scene, gltf, tilesJson, wfc, audio }) {
    * 85 degrees, `halfOpen` = between 10 and 70 degrees, `core` = the same counts for the middle 70 % of the width.
    */
   function debugBand(camera, focus, band = 0.35, minSize = 0.3) {
+    const bx0 = focus.x, bz0 = focus.z;
     dv.copy(focus).project(camera);
     const fy = dv.y;
-    const out = { total: 0, notUp: 0, halfOpen: 0, coreTotal: 0, coreNotUp: 0, screenTotal: 0, screenNotUp: 0 };
+    const out = { total: 0, notUp: 0, halfOpen: 0, coreTotal: 0, coreNotUp: 0, screenTotal: 0, screenNotUp: 0, levelTotal: 0, levelNotUp: 0 };
     for (let slot = 0; slot < NSLOT; slot++) {
       const proto = slotProto[slot];
       if (!proto) continue;
       for (let i = 0; i < proto.pieces.length; i++) {
         const p = proto.pieces[i];
         if (p.fa === 0 || !p.hasMesh || p.size < minSize) continue;
-        let px = p.px, pz = p.pz;
-        for (let r = 0; r < slotRot[slot]; r++) { const nx = -pz; pz = px; px = nx; }
+        const px = slotVar[slot].pos[i * 2], pz = slotVar[slot].pos[i * 2 + 1];
         dv.set(slotCx[slot] * CELL + px, 0.1, slotCz[slot] * CELL + pz).project(camera);
         if (Math.abs(dv.x) > 0.98 || Math.abs(dv.y) > 0.98) continue;
         let x = pool.x[slot * STRIDE + i]; // a piece is as flat as its flattest folding ancestor
         for (let q = p.parent; q >= 0; q = proto.pieces[q].parent) if (proto.pieces[q].fa !== 0) x = Math.max(x, pool.x[slot * STRIDE + q]);
         const notUp = x > 5 / 90 ? 1 : 0;
         out.screenTotal++; out.screenNotUp += notUp;
+        // level with or behind the traveller along the heading
+        if ((slotCx[slot] * CELL + px - bx0) * frameUx + (slotCz[slot] * CELL + pz - bz0) * frameUz <= 0) { out.levelTotal++; out.levelNotUp += notUp; }
         if (Math.abs(dv.y - fy) > band) continue;
         out.total++; out.notUp += notUp;
         if (x > 2 / 9 && x < 8 / 9) out.halfOpen++;

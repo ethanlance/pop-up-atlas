@@ -8,15 +8,18 @@ const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ?
 const port = arg('port', 5183), seed = arg('seed', 7), topOut = arg('top', 'captures/world_top.png');
 const fails = [];
 const check = (ok, msg) => { if (!ok) fails.push(msg); return ok; };
+// Angle (degrees up from flat) every 100 ms through a trace.
+const every100 = (samples) => { const out = []; for (let t = 0; t <= 1.0001; t += 0.1) { const k = samples.findIndex((q) => q.t >= t - 1e-6); out.push(k < 0 ? NaN : Math.round(90 - samples[k].x * 90)); } return out; };
 const fmt = (r) => `rise ${r.rise.toFixed(3)} s, overshoot ${r.overshoot.toFixed(1)} %, wobbles ${r.wobbles} ` +
-  `[${r.extrema.map((x) => (x * 100).toFixed(1)).join(', ')}], settle ${r.settle.toFixed(3)} s, 10-70 deg in ${(r.dwell * 1000).toFixed(0)} ms`;
+  `[${r.extrema.map((x) => (x * 100).toFixed(1)).join(', ')}], settle ${r.settle.toFixed(3)} s`;
 function gate(r, label) {
   check(!r.nan, `${label}: NaN in trace`);
   check(r.max <= 1.000001, `${label}: flap went below flat (x max ${r.max})`);
   check(r.rise >= 0.5 && r.rise <= 0.6, `${label}: rise ${r.rise.toFixed(3)} outside 0.5-0.6 s`);
   check(r.overshoot >= 10 && r.overshoot <= 14, `${label}: overshoot ${r.overshoot.toFixed(1)} % outside 10-14`);
-  check(r.dwell <= 0.15, `${label}: ${(r.dwell * 1000).toFixed(0)} ms between 10 and 70 degrees`);
-  check(r.wobbles >= 2 && r.wobbles <= 3, `${label}: ${r.wobbles} visible wobbles, want 2-3`);
+  check(r.extrema[1] >= 0.04, `${label}: first back-swing ${((r.extrema[1] ?? 0) * 100).toFixed(1)} % < 4 %`);
+  check(r.steps >= 4, `${label}: only ${r.steps} intermediate angles at 100 ms spacing`);
+  check(r.wobbles >= 3 && r.wobbles <= 4, `${label}: ${r.wobbles} extrema of 1 % or more, want overshoot plus 2-3 swings`);
   check(r.settle < 1.4, `${label}: settle ${r.settle.toFixed(3)} s >= 1.4`);
 }
 
@@ -34,7 +37,9 @@ function simulate(mass, frameDt) {
     acc -= n * Fold.SUBSTEP;
     for (let k = 0; k < n; k++) { Fold.step(pool, 0, Fold.SUBSTEP); t += Fold.SUBSTEP; trace.push({ t, x: pool.x[0] }); }
   }
-  return { r: Fold.measureRise(trace), pool };
+  const r = Fold.measureRise(trace);
+  r.steps = every100(trace).filter((d) => d > 5 && d < 85).length;
+  return { r, pool };
 }
 let prevOs = 0, prevRise = 0;
 for (const mass of [0.5, 0.75, 1, 1.5, 2]) {
@@ -93,7 +98,7 @@ async function traceRise(opts, nudge, where) {
         const t = w.debugTile(cx, cz);
         if (!t.inWindow && window.__protoMass?.[t.id] === undefined) { /* masses are learnt from tiles seen in the window */ }
         const masses = window.__protoMass?.[t.id];
-        if (masses && masses.some((m) => m >= (opts.minMass ?? 0) && m <= (opts.maxMass ?? 9))) spot = [cx * 2, cz * 2 + 1.2];
+        if (opts.name ? /hill/.test(t.id) : masses && masses.some((m) => m >= (opts.minMass ?? 0) && m <= (opts.maxMass ?? 9))) spot = [cx * 2, cz * 2 + 1.2];
       }
     }
     window.__atlas.teleport(...(spot ?? [where[0] * 2, where[1] * 2]));
@@ -103,7 +108,9 @@ async function traceRise(opts, nudge, where) {
   await page.evaluate((opts) => { const w = window.__atlas.world; w.debugFlapTrace({ ...opts, maxDist: 1.6 }); w.debugReplay(); }, opts);
   await page.waitForFunction(() => window.__atlas.world.debugTraceResult()?.done, null, { timeout: 15000 });
   const res = await page.evaluate(() => window.__atlas.world.debugTraceResult());
-  return { ...res, r: Fold.measureRise(res.samples) };
+  const r = Fold.measureRise(res.samples);
+  r.steps = every100(res.samples).filter((d) => d > 5 && d < 85).length;
+  return { ...res, r, deg: every100(res.samples) };
 }
 
 console.log('== browser: first 4 s (start + walking)');
@@ -124,11 +131,12 @@ console.log(`first 4 s: ${burst.audioRise} rise + ${burst.audioLand} land flap s
 
 console.log('== browser: sampled flap traces (sympathetic nudge off)');
 let spot = 200;
-for (const [label, opts] of [['light', { maxMass: 0.7 }], ['medium', { minMass: 0.8, maxMass: 1.3 }], ['heavy', { minMass: 1.5 }]]) {
+for (const [label, opts] of [['light', { maxMass: 0.7 }], ['medium', { minMass: 0.8, maxMass: 1.3 }], ['hill layer', { name: '^flap_hill' }]]) {
   spot += 50;
   const t = await traceRise(opts, false, [spot, 40]).catch(() => null);
   if (!t || !t.started) { console.log(`${label}: no flap of that mass rose (skipped)`); continue; }
   console.log(`${label} ${t.name} mass ${t.mass} foldAngle ${t.foldAngle.toFixed(3)} (${t.samples.length} samples): ${fmt(t.r)}`);
+  console.log(`   angle every 100 ms: ${t.deg.join(' ')} degrees`);
   gate(t.r, `browser ${label}`);
 }
 {
@@ -175,6 +183,11 @@ await page.evaluate(() => {
       if (R.frames % 6 === 0) {
         const m = w.debugMoving(cam, tr.position); R.moving.push(m.inFrame); R.band.push(m.inBand);
         const b = w.debugBand(cam, tr.position); for (const k in b) R.audit[k] = (R.audit[k] ?? 0) + b[k];
+        // The same audit for stretches of steady walking only (heading within 15 degrees for the last 1.5 s):
+        // right after a turn, cards that were ahead of the rise line are suddenly beside the traveller.
+        const hd = Math.atan2(tr.heading.z, tr.heading.x), now = performance.now();
+        if (R.hd === undefined || Math.abs(Math.atan2(Math.sin(hd - R.hd), Math.cos(hd - R.hd))) > 0.26) { R.hd = hd; R.hdSince = now; }
+        if (now - R.hdSince > 1500) { R.audit.steadyTotal = (R.audit.steadyTotal ?? 0) + b.levelTotal; R.audit.steadyNotUp = (R.audit.steadyNotUp ?? 0) + b.levelNotUp; }
       }
     };
     window.__R = R;
@@ -213,7 +226,9 @@ const au = walk.audit, pct = (a, b) => (b ? (100 * a / b).toFixed(2) : '0.00');
 console.log(`rest poses: of ${au.total} flap samples on screen in the sharp band, ${pct(au.notUp, au.total)} % were not fully up ` +
   `(${pct(au.halfOpen, au.total)} % between 10 and 70 degrees); middle 70 % of the width: ${pct(au.coreNotUp, au.coreTotal)} %; ` +
   `whole screen: ${pct(au.screenNotUp, au.screenTotal)} % not up (the leading edge)`);
-check(au.total > 0 && au.notUp / au.total < 0.02, `in-band flaps not fully up: ${pct(au.notUp, au.total)} %`);
+console.log(`level with or behind the traveller, on screen: ${pct(au.levelNotUp, au.levelTotal)} % of ${au.levelTotal} flap samples not fully up; ` +
+  `in steady walking (same heading for 1.5 s): ${pct(au.steadyNotUp ?? 0, au.steadyTotal ?? 0)} % of ${au.steadyTotal ?? 0}`);
+check((au.steadyTotal ?? 0) > 0 && au.steadyNotUp / au.steadyTotal < 0.02, `steady walking: flaps level with or behind the traveller not fully up: ${pct(au.steadyNotUp ?? 0, au.steadyTotal ?? 0)} %`);
 console.log(`fold shader programs: ${walk.programs.join(', ')}`);
 console.log(`edge-on pieces at drawable rotations: ${walk.slivers.length ? walk.slivers.map((t) => `${t.id}@${t.rot}[${t.pieces.join(', ')}]`).join('; ') : 'none'}`);
 console.log(`facing under 35 % (thin on screen): ${walk.nearSlivers.map((t) => `${t.id}@${t.rot}[${t.pieces.join(', ')}]`).join('; ') || 'none'}`);

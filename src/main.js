@@ -45,7 +45,7 @@ resize();
 
 const frames = [];
 let last = performance.now();
-renderer.setAnimationLoop((now) => {
+function frame(now) {
   const raw = now - last;
   last = now;
   frames.push(raw);
@@ -58,7 +58,11 @@ renderer.setAnimationLoop((now) => {
   audio.setListener(traveller.position.x, traveller.position.z);
   look.setFocus(rig.focusPoint ?? traveller.position);
   look.render(dt);
-});
+}
+// ?manual=1: the capture tools drive time themselves through __atlas.step(ms) for exact frame spacing.
+const manual = params.get('manual');
+let manualNow = last;
+if (!manual) renderer.setAnimationLoop(frame);
 
 window.__atlas = {
   world, input, look, traveller, renderer,
@@ -70,4 +74,5 @@ window.__atlas = {
       tris: renderer.info.render.triangles, ...world.stats() };
   },
   resetStats() { frames.length = 0; },
+  step(ms = 1000 / 60, n = 1) { for (let i = 0; i < n; i++) { manualNow += ms; frame(manualNow); } },
 };

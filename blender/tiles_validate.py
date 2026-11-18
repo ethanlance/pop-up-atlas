@@ -67,6 +67,8 @@ for t in tiles['tiles']:
         ex = n.get('extras', {})
         if not all(k in ex for k in ('foldAngle', 'delay', 'mass')):
             errors.append(f"{name}/{n['name']}: extras missing")
+        elif ex.get('free') not in (0, 1):
+            errors.append(f"{name}/{n['name']}: free must be 0 or 1, got {ex.get('free')!r}")
         elif not (0 <= ex['delay'] <= 1 and 0.5 <= ex['mass'] <= 2 and ex['foldAngle'] != 0):
             errors.append(f"{name}/{n['name']}: extras out of range {ex}")
         flaps_total += 1

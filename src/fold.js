@@ -2,9 +2,9 @@
 // A flap angle is a fraction x: 1 = flat on its parent, 0 = upright (popped), x < 0 = past upright (overshoot).
 // The rendered angle is foldAngle * x. Integration is semi-implicit Euler at a fixed substep (world.js owns the clock).
 //
-// Rise: a stiff spring follows a target that creeps off the page and then snaps upright (1 - u^7 over `riseT`) and
-// stops dead. The card spends about 0.4 s lifting its first 10 degrees, swings from 10 to 70 degrees in about 120 ms
-// (it is never seen hanging half open), overshoots upright by about 12 % and wobbles back once or twice.
+// Rise: a lightly damped spring follows a target that swings from flat to upright at a nearly even pace
+// (1 - u^1.6 over `riseT`) and then stops dead. The card turns about its crease through the whole 0.5-0.6 s (about
+// 20 degrees per 100 ms), runs about 11 % past upright because the target stopped, and swings back twice.
 // Fall: a softer, well damped spring aims slightly below the page, so the flap lands with a little speed, is clamped
 // at flat and bounces once, very small (the "slap").
 
@@ -31,10 +31,10 @@ export function flapParams(mass) {
   const m = Math.min(2, Math.max(0.5, mass || 1));
   const k = Math.log2(m); // -1..1
   return {
-    riseT: 0.52 + 0.03 * k, // target ramp duration, s
-    omega: 37 - 2 * k, // wobble spring, rad/s
-    zeta: 0.37 - 0.015 * k,
-    ramp: 7, // ramp exponent: higher = faster arrival = more overshoot
+    riseT: 0.52 + 0.012 * k, // target ramp duration, s
+    omega: 16.3 - 0.6 * k, // wobble spring, rad/s
+    zeta: 0.25,
+    ramp: 1.6, // ramp exponent: higher = faster arrival = more overshoot
     fallOmega: 15 - 2.5 * k,
     fallZeta: 0.8,
   };

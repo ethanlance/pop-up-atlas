@@ -86,6 +86,9 @@ def main():
             shapes[f.shape] = G.SHAPES[f.shape]
     shapes.update(G.TRAV_SHAPES)
     shapes['core'] = (G.o_rect(0, 0.4, 0, 0.1), 'core', 0.0)
+    shapes['back'] = (G.o_rect(0, 0.5, 0, 0.5), 'back', 0.0)
+    for st in sorted({v[1] for v in shapes.values()} & set(P.STYLE_COLOR)):
+        shapes['edge_' + st] = (G.o_rect(0, 0.1, 0, 0.05), 'edge_' + st, 0.0)
     shapes['tab'] = (G.o_rect(0, 0.3, 0, 0.07), 'tab', 0.0)
     ppu = None
     for cand in (240, 224, 208, 192, 176, 168, 160, 152, 144, 136, 128, 120, 112, 104, 96):
@@ -110,6 +113,16 @@ def main():
 
     cx, cy, cw, ch = atlas.rects['core']
     core_uv = ((cx + PAD + 1) / S, (cy + PAD + 1) / S, (cx + cw - PAD - 1) / S, (cy + ch - PAD - 1) / S)
+    def swatch(key):
+        x_, y_, w_, h_ = atlas.rects[key]
+        return ((x_ + PAD + 1) / S, (y_ + PAD + 1) / S, (x_ + w_ - PAD - 1) / S, (y_ + h_ - PAD - 1) / S)
+
+    back_uv = swatch('back')
+
+    def edge_uv(shape):
+        key = 'edge_' + shapes[shape][1]
+        return swatch(key) if key in atlas.rects else core_uv
+
     tx, ty, tw, th = atlas.rects['tab']
     tab_uv = ((tx + PAD) / S, (ty + PAD) / S, (tx + tw - PAD) / S, (ty + th - PAD) / S)
 
@@ -151,13 +164,20 @@ def main():
             xs = [x for x, z in f.outline if abs(z) < 1e-6]
             if len(xs) < 2 or max(xs) - min(xs) < 0.05:
                 continue
-            w = 0.72 * (max(xs) - min(xs))
+            w = max(0.14, 0.8 * (max(xs) - min(xs)))
             xc = (max(xs) + min(xs)) / 2
-            s = 1.0 if f.fold > 0 else -1.0
+            s = 1.0
             m = Matrix.Translation(f.origin) @ f.rot
-            quad = [(xc - w / 2, 0.0), (xc + w / 2, 0.0), (xc + w / 2 - 0.012, s * 0.06), (xc - w / 2 + 0.012, s * 0.06)]
-            if s < 0:
-                quad = quad[::-1]
+            if f.free and not t.sym:
+                # The world keeps this card facing the camera at every tile rotation, so its seat is a square pad.
+                quad = [(xc - w / 2, -w / 2), (xc + w / 2, -w / 2), (xc + w / 2, w / 2), (xc - w / 2, w / 2)]
+            elif f.free:
+                quad = [(xc - w / 2 + 0.012, -0.1), (xc + w / 2 - 0.012, -0.1), (xc + w / 2, 0.02), (xc - w / 2, 0.02)]
+            else:
+                sd = 1.0 if f.fold > 0 else -1.0
+                quad = [(xc - w / 2, 0.0), (xc + w / 2, 0.0), (xc + w / 2 - 0.012, sd * 0.07), (xc - w / 2 + 0.012, sd * 0.07)]
+                if sd < 0:
+                    quad = quad[::-1]
             wp = [m @ G.Vector((qx, qy, 0.0)) for qx, qy in quad]
             if max(max(abs(v.x), abs(v.y)) for v in wp) > 0.99:
                 continue
@@ -174,9 +194,10 @@ def main():
         nodes = {}
         for f in t.flaps:
             up = tuple(f.m_rest.to_3x3().inverted() @ G.Vector((0.0, 0.0, 1.0)))
-            mesh = G.card_mesh(f.outline, f.uv_outline, f.slab[0], f.slab[1], uvmap(f.shape), core_uv, rnd, up=up)
+            mesh = G.card_mesh(f.outline, f.uv_outline, f.slab[0], f.slab[1], uvmap(f.shape), edge_uv(f.shape), rnd,
+                               up=up, back_uv=back_uv, flip=f.flip)
             total += tris(mesh)
-            extras = {'foldAngle': round(f.fold, 5), 'delay': f.delay, 'mass': round(f.mass, 3)}
+            extras = {'foldAngle': round(f.fold, 5), 'delay': f.delay, 'mass': round(f.mass, 3), 'free': int(f.free)}
             node = glb.add_node(f.name, glb.add_mesh(f'{t.id}_{f.name}', mesh), f.origin, f.rot.to_quaternion(), extras)
             nodes[f] = node
             glb.add_child(nodes[f.parent] if f.parent else root, node)
@@ -195,7 +216,7 @@ def main():
 
     def tcard(shape, ya, yb, up=(0.0, 0.0, 1.0)):
         o = G.ccw(G.TRAV_SHAPES[shape][0])
-        return G.card_mesh(G.scaled(o, kk), o, ya, yb, uvmap(shape), core_uv, rnd, up=up)
+        return G.card_mesh(G.scaled(o, kk), o, ya, yb, uvmap(shape), edge_uv(shape), rnd, up=up)
 
     def part(name, mesh, origin=None):
         nonlocal ttris
