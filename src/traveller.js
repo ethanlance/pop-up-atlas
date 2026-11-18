@@ -122,7 +122,7 @@ function buildMarker() {
   g.lineCap = 'round';
   const stroke = (x0, y0, x1, y1) => {
     for (let pass = 0; pass < 5; pass++) {
-      g.strokeStyle = `rgba(70,62,54,${0.2 + 0.1 * Math.sin(pass * 2.1)})`;
+      g.strokeStyle = `rgba(58,50,44,${0.3 + 0.1 * Math.sin(pass * 2.1)})`;
       g.lineWidth = 3 + 1.5 * Math.sin(pass * 1.3);
       g.beginPath();
       g.moveTo(x0 + 3 * Math.sin(pass * 3.7), y0 + 3 * Math.cos(pass * 2.9));
@@ -135,7 +135,7 @@ function buildMarker() {
   stroke(102, 30, 28, 98);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.3), new THREE.MeshBasicMaterial({
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.34, 0.34), new THREE.MeshBasicMaterial({
     map: tex, transparent: true, opacity: 0, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4,
   }));
   mesh.rotation.x = -Math.PI / 2;
@@ -210,6 +210,8 @@ export function createTraveller({ scene, gltf, world, audio }) {
   let slideSide = 1, contactAge = 1;
   const normal = new THREE.Vector2(), scratch = new THREE.Vector2();
   let steps = 0;
+  let lightAge = 10, lightSide = 0;
+  let markerOpacity = 0;
 
   const ok = (x, z) => world.isWalkable(x, z);
 
@@ -309,7 +311,16 @@ export function createTraveller({ scene, gltf, world, audio }) {
     swing(limbs[3], stride * 0.8);
 
     // --- springs, in small fixed steps so they behave the same at any frame rate
+    lightAge += dt;
+    if (lightAge > 1.5) { // the look module owns the lights and may be created later, so look again now and then
+      lightAge = 0;
+      let key = null;
+      scene.traverse((o) => { if (o.isDirectionalLight && (!key || o.intensity > key.intensity)) key = o; });
+      lightSide = key ? Math.sign(key.position.x - key.target.position.x) : 0;
+    }
     if (vel.x > 0.3 * SPEED) facing = 1; else if (vel.x < -0.3 * SPEED) facing = -1;
+    // Walking straight up or down the page, either side may show: pick the one that turns towards the key light.
+    else if (lightSide && Math.abs(vel.y) > 0.6 * SPEED) facing = (vel.y < 0 ? 1 : -1) * lightSide;
     let yawGoal = facing > 0 ? 0 : Math.PI;
     if (vel.lengthSq() > 0.09) {
       const full = Math.atan2(-vel.y, vel.x * facing); // angle away from the facing side's rest pose
@@ -331,14 +342,12 @@ export function createTraveller({ scene, gltf, world, audio }) {
     standYaw.rotation.y = yaw;
     lean.rotation.set(leanZ - TILT_BACK, 0, -leanX);
 
-    // --- pencil mark
-    const age = input.markerAge ?? Infinity;
-    const fade = Math.max(0, 1 - age / 1.6);
-    marker.visible = fade > 0;
-    if (marker.visible) {
-      marker.position.set(input.markerPos.x, 0.012, input.markerPos.z);
-      marker.material.opacity = 0.5 * fade * fade;
-    }
+    // --- pencil mark: stays while the walk is on, then fades
+    const shown = input.target && !input.held && (input.markerAge ?? Infinity) < 6;
+    markerOpacity += ((shown ? 0.7 : 0) - markerOpacity) * (1 - Math.exp(-dt * (shown ? 12 : 4)));
+    marker.visible = markerOpacity > 0.01;
+    if (shown) marker.position.set(input.markerPos.x, 0.012, input.markerPos.z);
+    marker.material.opacity = markerOpacity;
   }
 
   return { position, heading, update, get speed() { return speedNow; }, get yaw() { return yaw; },

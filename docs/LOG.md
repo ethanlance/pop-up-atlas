@@ -161,3 +161,44 @@
 - TILES AGENT: on tiles drawn at rot 1 or 3 (east-west paths and rivers, corners) every flap stands edge-on to the
   camera, because hinges are along local X. Free-standing props on those tiles (flowers, tufts, milestones, reeds) would
   read better with hinges authored at 45 degrees or as V-folds. Card back faces render almost black when lit from behind.
+
+## 2026-11-17 23:59 UTC traveller agent
+- Replaced the stubs: `src/input.js`, `src/traveller.js`, `src/cameraRig.js`. Added `tools/trav_test.mjs`
+  (`node tools/trav_test.mjs [--real] [--auto 40] [--shots] [--shots-only]`, 32 checks, all pass; it stubs the Vite
+  client so hot reloads from other agents' edits cannot restart the page mid-run).
+- Measured (headless Chrome, Metal, 60 Hz): walk speed 2.20 u/s; 95 % speed in 0.10 s; 3.6 footfalls/s (17 in 5 s
+  from rest); hop apex 0.060; landing squash 5.5 %; facing flip 0.083 s with 15 % overshoot; click-to-walk arrival
+  error 0.009-0.014 u on a straight line; camera step response 63 % at 0.30 s (50 % 0.23 s, 90 % 0.55 s, no
+  overshoot); camera velocity deviation while walking 0.03-0.05 %; pitch 54.5 deg; 18.4 units across at 16:9.
+- Camera follow is an exact critically damped step that accounts for the target's velocity, so it is frame-rate
+  independent: an offline run at 144 Hz, 60 Hz, 20 Hz and random 4-50 ms steps gives the same lead (0.6714 u) and a
+  velocity error below 1e-12 u/s. NOT measured in the browser at other frame rates (CPU throttling did not change the
+  60 Hz frame time).
+- Auto mode: 40 s covers 87-88 u of path (limit is 88) on the open, synthetic and real worlds; real world seed 1 nets
+  59 u forward in 40 s; seeds 2, 3, 7 ran 150 s each with 296-317 u of path and 162-172 u forward, crossing rivers at
+  bridges, never inside a blocked position. Route search costs 0.8-2 ms median every 0.5 s, 4-12 ms on the first.
+- Collision: bisect to the surface, axis slide, then a tangent slide from a sampled obstacle normal; head-on at a convex
+  obstacle steps round it, a wall or concave corner holds still (0 frame-to-frame movement, 0 reversals).
+- ASSUMPTION: the card turns at most 40 deg from camera-facing (full turn would put it edge-on to the camera when
+  walking up or down the page); it mirrors by a 180 deg springy flip for left/right.
+- ASSUMPTION: the card rests tilted back 0.3 rad (as in the concept frames) so its face reads from the 55 deg camera.
+- ASSUMPTION: when walking straight up or down the page the card shows the side that turns towards the strongest
+  DirectionalLight in the scene (read from the scene every 1.5 s); without one it keeps its last facing.
+- ASSUMPTION: the stand hops with the figure but does not lean; the card above it leans and wobbles on the tab.
+- ASSUMPTION: the pencil mark stays while a click-walk is active and fades on arrival or cancel (6 s at most); it is
+  hidden while the pointer is held. Under the tilt-shift blur it is only legible near the focus band.
+- Extras beyond the contract (read-only, used by tools): `input.camera`, `input.target`, `input.markerPos`,
+  `input.markerAge`, `input.held`, `input.planMs`, `input.walkable` (installed by the traveller on its first update);
+  `traveller.speed`, `.yaw`, `.steps`, `.hop`, `.squash`. Auto state resets on `setAuto(true)` or a teleport > 2 u.
+- The procedural fallback figure stays in traveller.js and is used when the glb has no `traveller` node; the glb node
+  (faces +X, normal Z, identity part rotations) is used as authored, no changes needed from the tiles agent.
+- For the lead / look agent: at 18.4 units across the traveller is about 45 px tall at 1440 wide. The spec floor is
+  9 cells; a closer camera needs a contract change. DISTANCE and PITCH are constants at the top of cameraRig.js.
+
+## 2026-11-18 lead — integration, camera change, critic round 1
+- All seven components integrated and committed (a5f259f). Quiet-machine perf: p95 4.3–6.3 ms, 27 draw calls, 245k tris.
+- CONTRACT CHANGE (lead): camera DISTANCE 21 -> 13 (about 11.5 units across). Reason: at 18.6 units across the traveller
+  was ~40 px and cards could not show thickness; concept frames see 4.5–12.6 units. World rise region must follow.
+- Known gaps before critic: page mottling too grey/dirty vs concept cream; pale card colours; edge-on small flaps on
+  rotated tiles; near-black card backs; flat printed bridge deck; house walls intersect mid-fold.
+- Blind A/B round 1 built with tools/ab.mjs (random left/right, key in critic/round1/key.json, critic may not read it).

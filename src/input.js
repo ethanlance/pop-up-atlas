@@ -28,6 +28,7 @@ export function createInput(dom, camera) {
     dir, camera, markerPos,
     target: null, // Vector3 on the page while a click-walk is active
     markerAge: Infinity, // seconds since the pencil mark was placed
+    held: false, // pointer is down, the target follows it
     walkable: null, // (x, z) => bool, installed by the traveller
     auto: false,
     setAuto(v) { api.auto = !!v; auto.fresh = true; },
@@ -86,7 +87,6 @@ export function createInput(dom, camera) {
     keys.add(e.code);
     clearTarget();
     pointerDown = false;
-    api.markerAge = Math.max(api.markerAge, 1.2); // hurry the pencil mark away
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', () => { keys.clear(); pointerDown = false; });
@@ -285,6 +285,7 @@ export function createInput(dom, camera) {
       return;
     }
 
+    api.held = pointerDown;
     if (pointerDown) pick(); // the camera moves, so the point under a held pointer moves too
     if (api.target) {
       const dx = api.target.x - p.x, dz = api.target.z - p.z;
@@ -292,7 +293,7 @@ export function createInput(dom, camera) {
       // Give up on a target the traveller cannot make progress towards (blocked cell).
       if (dist < lastDist - 0.02) { lastDist = dist; stuckTime = 0; } else stuckTime += dt;
       if (dist <= ARRIVE_RADIUS || (stuckTime > 0.6 && !pointerDown)) {
-        if (!pointerDown) { clearTarget(); api.markerAge = Math.max(api.markerAge, 1.2); }
+        if (!pointerDown) clearTarget();
         dir.set(0, 0);
         return;
       }

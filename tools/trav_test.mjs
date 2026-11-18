@@ -1,4 +1,4 @@
-// Traveller / input / camera acceptance test. Run: node tools/trav_test.mjs [--throttle 4] [--auto 40] [--shots] [--real]
+// Traveller / input / camera acceptance test. Run: node tools/trav_test.mjs [--throttle 4] [--auto 40] [--shots] [--shots-only] [--real]
 // Uses the installed Google Chrome on the GPU against the running dev server (port 5183).
 import { chromium } from 'playwright';
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? (process.argv[i + 1] ?? '1') : d; };
@@ -55,6 +55,7 @@ async function open(scale = 1, w = 1440, h = 810) {
   return { page, errors };
 }
 
+if (!has('shots-only')) {
 const { page, errors } = await open();
 const rest = async (ms = 700) => page.waitForTimeout(ms);
 const reset = async (mode = 'open') => {
@@ -305,8 +306,10 @@ if (has('real')) await autoRun('real', autoSecs);
 if (errors.length) check('page errors', errors.join(' | '), false);
 await page.close();
 
+}
+
 // ---- close-up captures for visual review ----------------------------------------------------------------------
-if (has('shots')) {
+if (has('shots') || has('shots-only')) {
   const { page: p2 } = await open(4, 1440, 810);
   const clipAt = async (what, w = 150, h = 120) => {
     const [x, y] = await p2.evaluate((k) => {
@@ -328,8 +331,9 @@ if (has('shots')) {
     if (name === 'right') await p2.screenshot({ path: 'captures/trav_close_stopping.png', clip: await clipAt('trav') });
     await p2.waitForTimeout(700);
   }
-  await p2.mouse.click(1000, 300);
-  await p2.waitForTimeout(300);
+  const near = await clipAt('trav', 0, 0); // click a short walk away, inside the sharp band, and catch the mark
+  await p2.mouse.click(near.x + 70, near.y + 22);
+  await p2.waitForTimeout(160);
   await p2.screenshot({ path: 'captures/trav_close_marker.png', clip: await clipAt('marker') });
   await p2.screenshot({ path: 'captures/trav_wide.png' });
   await p2.close();

@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 
 const PITCH = THREE.MathUtils.degToRad(55); // degrees below the horizon
-const DISTANCE = 21; // FOV 28 at 16:9 -> ~18.6 units (9.3 cells) across the screen at the focus point
+const DISTANCE = 13; // lead: pulled in to ~11.5 units across so cards show thickness (see LOG)
 const OMEGA = 7; // follow spring: ramp lag 2/OMEGA = 0.29 s, 63 % step time 2.15/OMEGA = 0.31 s
 const LOOK_AHEAD = 1.3; // units the view leads in the heading direction
 const LOOK_OMEGA = 2.2; // slow, so reversing direction pans gently

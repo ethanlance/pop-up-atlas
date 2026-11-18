@@ -1,0 +1,26 @@
+{
+ "pair_1": {
+  "left": "game",
+  "right": "reference",
+  "seed": 7,
+  "concept": 2
+ },
+ "pair_2": {
+  "left": "reference",
+  "right": "game",
+  "seed": 3,
+  "concept": 3
+ },
+ "pair_3": {
+  "left": "reference",
+  "right": "game",
+  "seed": 11,
+  "concept": 4
+ },
+ "pair_4": {
+  "left": "game",
+  "right": "reference",
+  "seed": 5,
+  "concept": 1
+ }
+}
